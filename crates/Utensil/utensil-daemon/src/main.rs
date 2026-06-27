@@ -219,6 +219,13 @@ fn run_daemon() {
 
     let _ = std::fs::create_dir_all(DATA_DIR);
 
+    // Block SIGTERM/SIGINT before spawning any threads so all threads
+    // inherit the blocked mask and the signal is only delivered via signalfd.
+    let mask = SignalRuntime::set_with(&[SIGTERM, SIGINT]).unwrap_or_else(|e| {
+        log_error!(TAG, "signals: {e}"); std::process::exit(1);
+    });
+    SignalRuntime::block_current_thread(&mask).ok();
+
     // shared idle state (prop watcher → WD reactor)
     let is_deep  = Arc::new(AtomicBool::new(false));
     let idle_efd = Arc::new(Fd::eventfd(0).expect("idle eventfd"));
@@ -244,12 +251,6 @@ fn run_daemon() {
     thread::spawn(move || deepsleep::run(ctx));
 
     thread::spawn(move || watchdog::run(DATA_DIR, PKG_XML, is_deep, idle_efd));
-
-    // main thread: block on SIGTERM/SIGINT via reactor (signalfd is SFD_NONBLOCK)
-    let mask = SignalRuntime::set_with(&[SIGTERM, SIGINT]).unwrap_or_else(|e| {
-        log_error!(TAG, "signals: {e}"); std::process::exit(1);
-    });
-    SignalRuntime::block_current_thread(&mask).ok();
     let signal_fd = SignalRuntime::signalfd_new(&mask).unwrap_or_else(|e| {
         log_error!(TAG, "signalfd: {e}"); std::process::exit(1);
     });
