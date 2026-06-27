@@ -10,7 +10,7 @@ use coreshift_core::process::{
     close_fds_from, fork, redirect_fd_to, redirect_stdio_to_devnull, set_pdeathsig, setsid,
     setpgid, ForkResult,
 };
-use coreshift_core::reactor::Fd;
+use coreshift_core::reactor::{Fd, Reactor};
 use coreshift_core::signal::{signal_ignore, SignalRuntime, SIGHUP, SIGPIPE, SIGINT, SIGTERM};
 use coreshift_core::spawn::{ExitStatus, Process};
 use coreshift_core::{log_error, log_info};
@@ -245,7 +245,7 @@ fn run_daemon() {
 
     thread::spawn(move || watchdog::run(DATA_DIR, PKG_XML, is_deep, idle_efd));
 
-    // main thread: block on SIGTERM/SIGINT
+    // main thread: block on SIGTERM/SIGINT via reactor (signalfd is SFD_NONBLOCK)
     let mask = SignalRuntime::set_with(&[SIGTERM, SIGINT]).unwrap_or_else(|e| {
         log_error!(TAG, "signals: {e}"); std::process::exit(1);
     });
@@ -254,14 +254,26 @@ fn run_daemon() {
         log_error!(TAG, "signalfd: {e}"); std::process::exit(1);
     });
 
+    let mut sig_reactor = Reactor::new().unwrap_or_else(|e| {
+        log_error!(TAG, "sig reactor: {e}"); std::process::exit(1);
+    });
+    let sig_tok = sig_reactor.add(&signal_fd, true, false).expect("add signalfd");
+
     let mut buf = [0u8; 128];
+    let mut sig_events = Vec::new();
     loop {
-        match signal_fd.read_slice(&mut buf) {
-            Ok(Some(_)) => {
-                log_info!(TAG, "signal — shutting down");
-                std::process::exit(0);
+        sig_events.clear();
+        match sig_reactor.wait(&mut sig_events, 1, -1) {
+            Err(_) | Ok(0) => continue,
+            Ok(_) => {}
+        }
+        for ev in &sig_events {
+            if ev.token == sig_tok {
+                if signal_fd.read_slice(&mut buf).is_ok() {
+                    log_info!(TAG, "signal — shutting down");
+                    std::process::exit(0);
+                }
             }
-            _ => continue,
         }
     }
 }
