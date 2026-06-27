@@ -129,21 +129,44 @@ fn run_supervisor() -> Result<(), Box<dyn std::error::Error>> {
 
 fn cmd_stop() -> Result<(), Box<dyn std::error::Error>> {
     let pid_file = Path::new(PID_FILE);
-    match std::fs::read_to_string(pid_file) {
+    let s = match std::fs::read_to_string(pid_file) {
         Err(_) => { println!("daemon not running (no PID file)"); return Ok(()); }
-        Ok(s) => {
-            let pid: i32 = s.trim().parse()?;
-            let _ = Process::new(pid).kill(SIGTERM);
-            let start = Instant::now();
-            while pid_file.exists() && start.elapsed() < Duration::from_secs(3) {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            if pid_file.exists() {
-                println!("warning: PID file still exists after SIGTERM");
-            } else {
-                println!("daemon stopped");
-            }
+        Ok(s) => s,
+    };
+    let pid: i32 = s.trim().parse()?;
+    let process = Process::new(pid);
+
+    if process.kill(0).is_err() {
+        // stale PID file — process already dead
+        let _ = std::fs::remove_file(pid_file);
+        println!("daemon not running (stale PID file removed)");
+        return Ok(());
+    }
+
+    let _ = process.kill(SIGTERM);
+
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(3) {
+        std::thread::sleep(Duration::from_millis(100));
+        // file gone → supervisor cleaned up and exited
+        if !pid_file.exists() {
+            println!("daemon stopped");
+            return Ok(());
         }
+        // process dead but file not yet removed (supervisor killed) → clean up
+        if Process::new(pid).kill(0).is_err() {
+            let _ = std::fs::remove_file(pid_file);
+            println!("daemon stopped");
+            return Ok(());
+        }
+    }
+
+    // timeout: force-remove stale file if process is now dead
+    if Process::new(pid).kill(0).is_err() {
+        let _ = std::fs::remove_file(pid_file);
+        println!("daemon stopped (PID file force-removed)");
+    } else {
+        println!("warning: daemon did not stop within 3s");
     }
     Ok(())
 }
