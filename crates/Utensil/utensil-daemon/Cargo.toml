@@ -17,6 +17,7 @@ utensil-ds           = { workspace = true }
 utensil-wd           = { workspace = true }
 utensil-bs           = { workspace = true }
 utensil-pm           = { workspace = true }
+dynamic-rr           = { workspace = true }
 
 [profile.release]
 opt-level = 3

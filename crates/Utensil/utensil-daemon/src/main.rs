@@ -18,6 +18,7 @@ use coreshift_foreground::config::Config;
 use coreshift_foreground::daemon::Daemon;
 use utensil_ds::binder_calls::BinderCtx;
 use utensil_pm;
+use dynamic_rr;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -285,6 +286,7 @@ fn run_daemon() {
     thread::spawn(move || watchdog::run(DATA_DIR, PKG_XML, is_deep, idle_efd));
 
     thread::spawn(|| utensil_pm::run());
+    thread::spawn(|| dynamic_rr::run());
     let signal_fd = SignalRuntime::signalfd_new(&mask).unwrap_or_else(|e| {
         log_error!(TAG, "signalfd: {e}"); std::process::exit(1);
     });
