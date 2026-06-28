@@ -8,6 +8,9 @@ use coreshift_core::android_property::{
     android_property_set, android_property_wait,
 };
 use coreshift_core::reactor::{Event, Fd, Reactor};
+use coreshift_core::unix_socket::{
+    connect_unix_stream_named, UnixConnectResult, UnixSocketAddr,
+};
 use coreshift_core::{log_error, log_info, log_warn};
 use coreshift_foreground::blocklist::Blocklist;
 use coreshift_foreground::cache::UidCache;
@@ -20,6 +23,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+const FG_SOCKET:    &[u8] = b"coreshift";
+const WD_CONSUMER:  &[u8] = b"coreshift_wd_consumer";
 
 const TAG:      &str = "policy:wd";
 const TICK_PROP: &str = "debug.tracing.watchdog_tick";
@@ -121,19 +127,38 @@ pub fn run(data_dir: &str, pkg_xml: &str, is_deep: Arc<AtomicBool>, idle_efd: Ar
     let timer_tok = reactor.add(&timer, true, false).expect("add timer");
     let idle_tok  = reactor.add(&idle_efd, true, false).expect("add idle_efd");
 
+    // connect @coreshift for instant reverse on foreground change
+    let fg_stream = loop {
+        match connect_unix_stream_named(
+            UnixSocketAddr::Abstract(FG_SOCKET),
+            UnixSocketAddr::Abstract(WD_CONSUMER),
+        ) {
+            Ok(UnixConnectResult::Connected(s)) => break s,
+            Ok(UnixConnectResult::InProgress(_)) => {}
+            Err(e) => { log_warn!(TAG, "connect @coreshift: {e} — retry in 2s"); }
+        }
+        thread::sleep(Duration::from_secs(2));
+    };
+    if fg_stream.fd.write_slice(b"watch").is_err() {
+        log_error!(TAG, "write watch to @coreshift failed");
+        std::process::exit(1);
+    }
+    let fg_tok = reactor.add(&fg_stream.fd, true, false).expect("add fg");
+
     // arm initial timer
     if let Err(e) = timer.set_timer_oneshot(Some(INTERVAL)) {
         log_error!(TAG, "arm: {e}"); std::process::exit(1);
     }
     let mut armed_at: Option<Instant> = Some(Instant::now());
-    // remaining time preserved across a freeze; None means timer is live
     let mut frozen_remaining: Option<Duration> = None;
 
     let mut events: Vec<Event> = Vec::new();
+    let mut buf    = [0u8; 256];
+    let mut leftover = String::new();
 
     loop {
         events.clear();
-        match reactor.wait(&mut events, 4, -1) {
+        match reactor.wait(&mut events, 8, -1) {
             Err(_) | Ok(0) => continue,
             Ok(_) => {}
         }
@@ -141,23 +166,46 @@ pub fn run(data_dir: &str, pkg_xml: &str, is_deep: Arc<AtomicBool>, idle_efd: Ar
         for i in 0..events.len() {
             let tok = events[i].token;
 
+            // ── foreground changed → instant reverse ──────────────────────
+            if tok == fg_tok {
+                if events[i].hangup || events[i].error {
+                    log_warn!(TAG, "@coreshift disconnected");
+                    // socket gone — reverse will fall back to tick-time only
+                    continue;
+                }
+                loop {
+                    match fg_stream.fd.read_slice(&mut buf) {
+                        Ok(Some(0)) | Ok(None) => break,
+                        Err(_) => break,
+                        Ok(Some(n)) => {
+                            leftover.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        }
+                    }
+                }
+                while let Some(nl) = leftover.find('\n') {
+                    let pkg = leftover[..nl].trim().to_string();
+                    leftover.drain(..=nl);
+                    if pkg.is_empty() { continue; }
+                    log_info!(TAG, "fg={pkg} — instant reverse");
+                    punish.reverse(&pkg);
+                }
+            }
+
             // ── idle state changed ────────────────────────────────────────
             if tok == idle_tok {
-                let mut buf = [0u8; 8];
-                while let Ok(Some(_)) = idle_efd.read_slice(&mut buf) {}
+                let mut ibuf = [0u8; 8];
+                while let Ok(Some(_)) = idle_efd.read_slice(&mut ibuf) {}
 
                 if is_deep.load(Ordering::Relaxed) {
-                    // entering deep sleep: freeze timer, record remaining
                     if let Some(at) = armed_at.take() {
                         let elapsed   = at.elapsed();
                         let remaining = INTERVAL.saturating_sub(elapsed);
                         frozen_remaining = Some(remaining);
-                        let _ = timer.set_timer_oneshot(None); // disarm
+                        let _ = timer.set_timer_oneshot(None);
                         log_info!(TAG, "timer frozen — {:.1}s remaining",
                                   remaining.as_secs_f32());
                     }
                 } else {
-                    // exiting deep sleep: re-arm with exact remaining time
                     if let Some(remaining) = frozen_remaining.take() {
                         if let Err(e) = timer.set_timer_oneshot(Some(remaining)) {
                             log_error!(TAG, "re-arm: {e}");
@@ -172,8 +220,8 @@ pub fn run(data_dir: &str, pkg_xml: &str, is_deep: Arc<AtomicBool>, idle_efd: Ar
 
             // ── timer fired ───────────────────────────────────────────────
             if tok == timer_tok {
-                let mut buf = [0u8; 8];
-                while let Ok(Some(_)) = timer.read_slice(&mut buf) {}
+                let mut tbuf = [0u8; 8];
+                while let Ok(Some(_)) = timer.read_slice(&mut tbuf) {}
 
                 do_tick(&mut resolver, &mut punish, &launcher, &mut prev_live, &mut tick);
 
