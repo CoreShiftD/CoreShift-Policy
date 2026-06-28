@@ -33,7 +33,7 @@ pub fn device_abis() -> Vec<String> {
         })
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Method { Fadvise, Readahead }
 
 pub struct ResolvedTarget {
@@ -111,6 +111,7 @@ pub fn resolve_targets(apk_path: &Path, abis: &[String]) -> Vec<ResolvedTarget> 
                 ] {
                     let p = PathBuf::from(format!("{}{suffix}", base.display()));
                     if real_file(&p) {
+                        log_info!(TAG, "resolved dalvik-cache: {}", p.display());
                         out.push(ResolvedTarget { path: p, method: *method });
                     }
                 }
@@ -131,7 +132,10 @@ pub fn hint_resolved(install_dir: &Path, targets: &[ResolvedTarget]) {
     let mut files = 0usize;
     for t in targets {
         match apply(&t.path, t.method) {
-            Ok(n)  => { bytes += n as u64; files += 1; }
+            Ok(n)  => {
+                log_info!(TAG, "  hint {:?} {}", t.method, t.path.display());
+                bytes += n as u64; files += 1;
+            }
             Err(e) => { log_warn!(TAG, "{}: {e}", t.path.display()); }
         }
     }
