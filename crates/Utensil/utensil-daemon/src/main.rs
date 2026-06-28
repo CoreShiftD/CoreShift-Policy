@@ -13,7 +13,7 @@ use coreshift_core::process::{
 use coreshift_core::reactor::{Fd, Reactor};
 use coreshift_core::signal::{signal_ignore, SignalRuntime, SIGHUP, SIGPIPE, SIGINT, SIGTERM};
 use coreshift_core::spawn::{ExitStatus, Process};
-use coreshift_core::{log_error, log_info};
+use coreshift_core::{log_error, log_info, log_warn};
 use coreshift_foreground::config::Config;
 use coreshift_foreground::daemon::Daemon;
 use utensil_ds::binder_calls::BinderCtx;
@@ -257,6 +257,9 @@ fn run_daemon() {
 
     watchdog::spawn_prop_watcher(is_deep.clone(), idle_efd.clone());
 
+    let fg_ready_file = format!("{}daemon.ready", Config::load(FG_CONF).cache_dir);
+    let _ = std::fs::remove_file(&fg_ready_file);
+
     thread::spawn(|| {
         loop {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -282,6 +285,18 @@ fn run_daemon() {
         std::process::exit(1);
     }));
     thread::spawn(move || deepsleep::run(ctx));
+
+    // wait for fg daemon to bind @coreshift before starting socket consumers
+    {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !Path::new(&fg_ready_file).exists() {
+            if Instant::now() >= deadline {
+                log_warn!(TAG, "fg socket ready timeout — consumers starting anyway");
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
 
     thread::spawn(move || watchdog::run(DATA_DIR, PKG_XML, is_deep, idle_efd));
 
