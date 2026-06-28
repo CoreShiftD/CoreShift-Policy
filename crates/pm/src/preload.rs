@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/
 
-use coreshift_core::fs::{fadvise, mmap_madvise, readahead, FADV_WILLNEED};
+use coreshift_core::fs::{fadvise, readahead, FADV_WILLNEED};
 use coreshift_core::{log_info, log_warn};
 use std::fs;
 use std::os::unix::io::AsRawFd;
@@ -19,18 +19,7 @@ struct Target { path: PathBuf, method: Method }
 
 // ── public API ────────────────────────────────────────────────────────────────
 
-/// Level 1 hint: fadvise WILLNEED (light, async kernel prefetch).
 pub fn hint_package(pkg: &str) {
-    apply_package(pkg, false);
-}
-
-/// Level 2 hint: mmap_madvise WILLNEED (strong, forces pages in).
-/// Called on timer cycle to promote already-hinted packages.
-pub fn promote_package(pkg: &str) {
-    apply_package(pkg, true);
-}
-
-fn apply_package(pkg: &str, promote: bool) {
     let install_dir = match find_install_dir(pkg) {
         Some(d) => d,
         None    => { log_warn!(TAG, "{pkg}: install dir not found"); return; }
@@ -43,18 +32,12 @@ fn apply_package(pkg: &str, promote: bool) {
     let mut bytes = 0u64;
     let mut files = 0usize;
     for t in &targets {
-        let result = if promote {
-            apply_madvise(&t.path)
-        } else {
-            apply_fadvise(&t.path, t.method)
-        };
-        match result {
+        match apply_fadvise(&t.path, t.method) {
             Ok(n)  => { bytes += n as u64; files += 1; }
             Err(e) => { log_warn!(TAG, "{pkg}: {}: {e}", t.path.display()); }
         }
     }
-    let level = if promote { "promote(madvise)" } else { "hint(fadvise)" };
-    log_info!(TAG, "{pkg}: {level} {files} file(s) {bytes}B");
+    log_info!(TAG, "{pkg}: hinted {files} file(s) {bytes}B");
 }
 
 // ── discovery ─────────────────────────────────────────────────────────────────
@@ -169,10 +152,3 @@ fn apply_fadvise(path: &Path, method: Method) -> Result<usize, String> {
     Ok(len)
 }
 
-fn apply_madvise(path: &Path) -> Result<usize, String> {
-    let file = fs::File::open(path).map_err(|e| e.to_string())?;
-    let len  = file_len(path);
-    if len == 0 { return Ok(0); }
-    mmap_madvise(file.as_raw_fd(), 0, len, false).map_err(|e| e.to_string())?;
-    Ok(len)
-}

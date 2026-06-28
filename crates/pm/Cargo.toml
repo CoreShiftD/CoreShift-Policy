@@ -7,4 +7,5 @@ license = "MPL-2.0"
 repository = "https://github.com/CoreShiftD/CoreShift-Policy"
 
 [dependencies]
-coreshift-core = { workspace = true }
+coreshift-core       = { workspace = true }
+coreshift-foreground = { workspace = true }
