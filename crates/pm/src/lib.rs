@@ -26,9 +26,8 @@ struct PkgInfo {
 pub fn run() {
     log_info!(TAG, "start pid={}", std::process::id());
 
-    // pkg → (uid, install_dir) for third-party apps only
-    let pkg_map = load_third_party_packages();
-    log_info!(TAG, "loaded {} third-party pkg(s)", pkg_map.len());
+    let pkg_map = load_packages();
+    log_info!(TAG, "loaded {} pkg(s)", pkg_map.len());
 
     let stream = loop {
         match connect_unix_stream_named(
@@ -99,7 +98,7 @@ fn on_foreground(pkg: &str, pkg_map: &HashMap<String, PkgInfo>) {
     let info = match pkg_map.get(pkg) {
         Some(i) => i,
         None    => {
-            log_info!(TAG, "fg={pkg} not third-party, skip");
+            log_info!(TAG, "fg={pkg} not in pkg map, skip");
             return;
         }
     };
@@ -109,11 +108,11 @@ fn on_foreground(pkg: &str, pkg_map: &HashMap<String, PkgInfo>) {
 
 // ── package list ──────────────────────────────────────────────────────────────
 
-/// Run `cmd package list packages -f -U -3` and parse into pkg → PkgInfo.
-/// Output line format: `package:<apk_path>=<pkg> uid:<uid>`
-fn load_third_party_packages() -> HashMap<String, PkgInfo> {
+/// Run `cmd package list packages -f` and parse into pkg → PkgInfo.
+/// Output line format: `package:<apk_path>=<pkg>`
+fn load_packages() -> HashMap<String, PkgInfo> {
     let output = match Command::new("/system/bin/cmd")
-        .args(["package", "list", "packages", "-f", "-U", "-3"])
+        .args(["package", "list", "packages", "-f"])
         .output()
     {
         Ok(o)  => o,
@@ -132,18 +131,14 @@ fn load_third_party_packages() -> HashMap<String, PkgInfo> {
     map
 }
 
-/// Parse `package:/path/to/base.apk=com.pkg uid:10234` → `(pkg, PkgInfo)`.
+/// Parse `package:/path/to/base.apk=com.pkg` → `(pkg, PkgInfo)`.
 fn parse_package_line(line: &str) -> Option<(String, PkgInfo)> {
-    // split on space: ["package:<path>=<pkg>", "uid:<uid>"]
-    let mut parts    = line.splitn(2, ' ');
-    let pkg_part     = parts.next()?.strip_prefix("package:")?;
-    let _uid_part    = parts.next()?.strip_prefix("uid:")?;
-
-    // pkg_part = "<path>=<pkg>" — split on last '='
-    let eq           = pkg_part.rfind('=')?;
-    let apk_path     = PathBuf::from(&pkg_part[..eq]);
-    let pkg          = pkg_part[eq + 1..].to_string();
-    let install_dir  = apk_path.parent()?.to_path_buf();
+    // strip "package:" prefix, remainder is "<path>=<pkg>"
+    let pkg_part    = line.split_whitespace().next()?.strip_prefix("package:")?;
+    let eq          = pkg_part.rfind('=')?;
+    let apk_path    = PathBuf::from(&pkg_part[..eq]);
+    let pkg         = pkg_part[eq + 1..].to_string();
+    let install_dir = apk_path.parent()?.to_path_buf();
 
     Some((pkg, PkgInfo { install_dir }))
 }
