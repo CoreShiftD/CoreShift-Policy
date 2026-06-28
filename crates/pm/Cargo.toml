@@ -1,0 +1,10 @@
+[package]
+name = "utensil-pm"
+version = "0.1.0"
+edition = "2024"
+description = "App preload performance manager for CoreShift Policy"
+license = "MPL-2.0"
+repository = "https://github.com/CoreShiftD/CoreShift-Policy"
+
+[dependencies]
+coreshift-core = { workspace = true }
