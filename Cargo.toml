@@ -7,7 +7,7 @@ resolver = "2"
 
 [workspace.dependencies]
 coreshift-core       = "1.2.13"
-coreshift-foreground = "0.1.5"
+coreshift-foreground = "0.1.6"
 utensil-ds           = "0.1.2"
 utensil-wd           = "0.1.1"
 utensil-bs           = "0.1.1"
