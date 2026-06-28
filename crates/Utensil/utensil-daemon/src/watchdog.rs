@@ -101,6 +101,25 @@ fn do_tick(
     *prev_live = live_bg;
 }
 
+fn fg_connect(reactor: &mut Reactor) -> Option<(coreshift_core::unix_socket::UnixStreamFd, coreshift_core::reactor::Token)> {
+    let stream = match connect_unix_stream_named(
+        UnixSocketAddr::Abstract(FG_SOCKET),
+        UnixSocketAddr::Abstract(WD_CONSUMER),
+    ) {
+        Ok(UnixConnectResult::Connected(s)) => s,
+        Ok(UnixConnectResult::InProgress(_)) => return None,
+        Err(e) => { log_warn!(TAG, "connect @coreshift: {e}"); return None; }
+    };
+    if stream.fd.write_slice(b"watch").is_err() {
+        log_warn!(TAG, "write watch to @coreshift failed");
+        return None;
+    }
+    match reactor.add(&stream.fd, true, false) {
+        Ok(tok) => { log_info!(TAG, "connected @coreshift (instant reverse active)"); Some((stream, tok)) }
+        Err(e)  => { log_warn!(TAG, "reactor add fg: {e}"); None }
+    }
+}
+
 /// WD thread entry. Receives pre-spawned watcher's shared state.
 pub fn run(data_dir: &str, pkg_xml: &str, is_deep: Arc<AtomicBool>, idle_efd: Arc<Fd>) {
     let wl_conf = format!("{data_dir}/watchdog_whitelist.conf");
@@ -127,23 +146,9 @@ pub fn run(data_dir: &str, pkg_xml: &str, is_deep: Arc<AtomicBool>, idle_efd: Ar
     let timer_tok = reactor.add(&timer, true, false).expect("add timer");
     let idle_tok  = reactor.add(&idle_efd, true, false).expect("add idle_efd");
 
-    // connect @coreshift for instant reverse on foreground change
-    let fg_stream = loop {
-        match connect_unix_stream_named(
-            UnixSocketAddr::Abstract(FG_SOCKET),
-            UnixSocketAddr::Abstract(WD_CONSUMER),
-        ) {
-            Ok(UnixConnectResult::Connected(s)) => break s,
-            Ok(UnixConnectResult::InProgress(_)) => {}
-            Err(e) => { log_warn!(TAG, "connect @coreshift: {e} — retry in 2s"); }
-        }
-        thread::sleep(Duration::from_secs(2));
-    };
-    if fg_stream.fd.write_slice(b"watch").is_err() {
-        log_error!(TAG, "write watch to @coreshift failed");
-        std::process::exit(1);
-    }
-    let fg_tok = reactor.add(&fg_stream.fd, true, false).expect("add fg");
+    // @coreshift connection — optional: instant reverse degrades to tick-only if unavailable
+    let mut fg_state: Option<(coreshift_core::unix_socket::UnixStreamFd, coreshift_core::reactor::Token)> = fg_connect(&mut reactor);
+    let mut fg_retry = Instant::now();
 
     // arm initial timer
     if let Err(e) = timer.set_timer_oneshot(Some(INTERVAL)) {
@@ -152,42 +157,52 @@ pub fn run(data_dir: &str, pkg_xml: &str, is_deep: Arc<AtomicBool>, idle_efd: Ar
     let mut armed_at: Option<Instant> = Some(Instant::now());
     let mut frozen_remaining: Option<Duration> = None;
 
-    let mut events: Vec<Event> = Vec::new();
-    let mut buf    = [0u8; 256];
-    let mut leftover = String::new();
+    let mut events:   Vec<Event> = Vec::new();
+    let mut buf:      [u8; 256]  = [0u8; 256];
+    let mut leftover: String     = String::new();
 
     loop {
         events.clear();
         match reactor.wait(&mut events, 8, -1) {
-            Err(_) | Ok(0) => continue,
+            Err(_) | Ok(0) => {}
             Ok(_) => {}
+        }
+
+        // retry @coreshift connection if disconnected (at most once per 5s)
+        if fg_state.is_none() && fg_retry.elapsed() >= Duration::from_secs(5) {
+            fg_state = fg_connect(&mut reactor);
+            fg_retry = Instant::now();
         }
 
         for i in 0..events.len() {
             let tok = events[i].token;
 
             // ── foreground changed → instant reverse ──────────────────────
-            if tok == fg_tok {
-                if events[i].hangup || events[i].error {
-                    log_warn!(TAG, "@coreshift disconnected");
-                    // socket gone — reverse will fall back to tick-time only
-                    continue;
-                }
-                loop {
-                    match fg_stream.fd.read_slice(&mut buf) {
-                        Ok(Some(0)) | Ok(None) => break,
-                        Err(_) => break,
-                        Ok(Some(n)) => {
-                            leftover.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if let Some((ref stream, fg_tok)) = fg_state {
+                if tok == fg_tok {
+                    if events[i].hangup || events[i].error {
+                        log_warn!(TAG, "@coreshift disconnected — reverting to tick-only");
+                        leftover.clear();
+                        fg_state = None;
+                        fg_retry = Instant::now();
+                        continue;
+                    }
+                    loop {
+                        match stream.fd.read_slice(&mut buf) {
+                            Ok(Some(0)) | Ok(None) => break,
+                            Err(_) => break,
+                            Ok(Some(n)) => {
+                                leftover.push_str(&String::from_utf8_lossy(&buf[..n]));
+                            }
                         }
                     }
-                }
-                while let Some(nl) = leftover.find('\n') {
-                    let pkg = leftover[..nl].trim().to_string();
-                    leftover.drain(..=nl);
-                    if pkg.is_empty() { continue; }
-                    log_info!(TAG, "fg={pkg} — instant reverse");
-                    punish.reverse(&pkg);
+                    while let Some(nl) = leftover.find('\n') {
+                        let pkg = leftover[..nl].trim().to_string();
+                        leftover.drain(..=nl);
+                        if pkg.is_empty() { continue; }
+                        log_info!(TAG, "fg={pkg} — instant reverse");
+                        punish.reverse(&pkg);
+                    }
                 }
             }
 
@@ -205,15 +220,13 @@ pub fn run(data_dir: &str, pkg_xml: &str, is_deep: Arc<AtomicBool>, idle_efd: Ar
                         log_info!(TAG, "timer frozen — {:.1}s remaining",
                                   remaining.as_secs_f32());
                     }
-                } else {
-                    if let Some(remaining) = frozen_remaining.take() {
-                        if let Err(e) = timer.set_timer_oneshot(Some(remaining)) {
-                            log_error!(TAG, "re-arm: {e}");
-                        } else {
-                            armed_at = Some(Instant::now());
-                            log_info!(TAG, "timer resumed — {:.1}s remaining",
-                                      remaining.as_secs_f32());
-                        }
+                } else if let Some(remaining) = frozen_remaining.take() {
+                    if let Err(e) = timer.set_timer_oneshot(Some(remaining)) {
+                        log_error!(TAG, "re-arm: {e}");
+                    } else {
+                        armed_at = Some(Instant::now());
+                        log_info!(TAG, "timer resumed — {:.1}s remaining",
+                                  remaining.as_secs_f32());
                     }
                 }
             }
@@ -225,10 +238,13 @@ pub fn run(data_dir: &str, pkg_xml: &str, is_deep: Arc<AtomicBool>, idle_efd: Ar
 
                 do_tick(&mut resolver, &mut punish, &launcher, &mut prev_live, &mut tick);
 
-                if let Err(e) = timer.set_timer_oneshot(Some(INTERVAL)) {
-                    log_error!(TAG, "re-arm after tick: {e}");
-                } else {
-                    armed_at = Some(Instant::now());
+                // only re-arm if not currently frozen
+                if !is_deep.load(Ordering::Relaxed) {
+                    if let Err(e) = timer.set_timer_oneshot(Some(INTERVAL)) {
+                        log_error!(TAG, "re-arm after tick: {e}");
+                    } else {
+                        armed_at = Some(Instant::now());
+                    }
                 }
             }
         }
