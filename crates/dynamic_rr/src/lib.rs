@@ -270,44 +270,23 @@ fn same_rate(a: &str, b: &str) -> bool {
 // ── prop watcher ──────────────────────────────────────────────────────────────
 
 fn spawn_prop_watcher(notify: Arc<Fd>) {
-    thread::spawn(move || {
-        struct Watched {
-            name:   &'static str,
-            info:   Option<coreshift_core::android_property::AndroidPropertyInfo>,
-            serial: u32,
-        }
-
-        let mut watched: Vec<Watched> = [PROP_DYNAMIC, PROP_LOW, PROP_HIGH]
-            .iter()
-            .map(|&name| {
-                let info = android_property_find(name);
-                let serial = info
-                    .and_then(|i| android_property_serial(i).ok())
-                    .unwrap_or(0);
-                Watched { name, info, serial }
-            })
-            .collect();
-
-        loop {
-            let mut changed = false;
-            for w in &mut watched {
-                if w.info.is_none() {
-                    w.info = android_property_find(w.name);
-                }
-                let Some(info) = w.info else { continue; };
-                match android_property_wait(info, w.serial, Some(Duration::from_millis(250))) {
-                    Ok(Some(new_serial)) => {
-                        w.serial = new_serial;
-                        changed  = true;
-                    }
-                    _ => {}
+    for name in [PROP_DYNAMIC, PROP_LOW, PROP_HIGH] {
+        let notify = notify.clone();
+        thread::spawn(move || {
+            let info = loop {
+                if let Some(i) = android_property_find(name) { break i; }
+                thread::sleep(Duration::from_secs(1));
+            };
+            let mut serial = android_property_serial(info).unwrap_or(0);
+            loop {
+                match android_property_wait(info, serial, None) {
+                    Ok(Some(s)) => { serial = s; let _ = notify.write_u64(1); }
+                    Ok(None)    => {}
+                    Err(_)      => thread::sleep(Duration::from_millis(200)),
                 }
             }
-            if changed {
-                let _ = notify.write_u64(1);
-            }
-        }
-    });
+        });
+    }
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
