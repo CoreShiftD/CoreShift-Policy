@@ -274,10 +274,11 @@ impl Daemon {
             Mode::Unknown => unreachable!(),
         };
         if self.mode == mode { return true; }
-        let ok = set_rate("min_refresh_rate", min_r)
-              && set_rate("peak_refresh_rate", peak_r);
+        // let ok = set_rate("min_refresh_rate", min_r)
+        //       && set_rate("peak_refresh_rate", peak_r);
+        let ok = true;
         if ok {
-            log_info!(TAG, "mode={mode:?} min={min_r} peak={peak_r}");
+            log_info!(TAG, "mode={mode:?} min={min_r} peak={peak_r} (settings disabled — binder only)");
             self.mode = mode;
             if let Some(d) = &self.display {
                 let switching = match mode {
