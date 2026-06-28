@@ -156,10 +156,6 @@ fn run_cmd(args: &[&str]) -> bool {
         .is_ok()
 }
 
-fn read_rate_setting(key: &str) -> String {
-    run_cmd_output(&["settings", "get", "system", key]).unwrap_or_default()
-}
-
 fn set_rate(key: &str, val: &str) -> bool {
     run_cmd(&["settings", "put", "system", key, val])
 }
@@ -277,12 +273,7 @@ impl Daemon {
             Mode::High => (self.low_rate.as_str(),  self.high_rate.as_str()),
             Mode::Unknown => unreachable!(),
         };
-        if self.mode == mode
-            && same_rate(min_r, &read_rate_setting("min_refresh_rate"))
-            && same_rate(peak_r, &read_rate_setting("peak_refresh_rate"))
-        {
-            return true; // already applied
-        }
+        if self.mode == mode { return true; }
         let ok = set_rate("min_refresh_rate", min_r)
               && set_rate("peak_refresh_rate", peak_r);
         if ok {
@@ -306,9 +297,6 @@ impl Daemon {
     fn set_high(&mut self) -> bool { self.apply_mode(Mode::High) }
 }
 
-fn same_rate(a: &str, b: &str) -> bool {
-    matches!((rate_int(a), rate_int(b)), (Some(a), Some(b)) if a == b)
-}
 
 // ── prop watcher ──────────────────────────────────────────────────────────────
 
@@ -457,8 +445,8 @@ pub fn print_status() {
     println!("prop_high={PROP_HIGH}={}", prop_get(PROP_HIGH));
     println!("idle_ms={}", daemon.config.idle_ms);
     println!("input_devices={}", daemon.config.input_devices.join(" "));
-    println!("current_min_refresh_rate={}",  read_rate_setting("min_refresh_rate"));
-    println!("current_peak_refresh_rate={}", read_rate_setting("peak_refresh_rate"));
+    println!("current_min_refresh_rate={}",  run_cmd_output(&["settings", "get", "system", "min_refresh_rate"]).unwrap_or_default());
+    println!("current_peak_refresh_rate={}", run_cmd_output(&["settings", "get", "system", "peak_refresh_rate"]).unwrap_or_default());
     if daemon.load_rates() {
         println!("chosen_low_rate={}",  daemon.low_rate);
         println!("chosen_high_rate={}", daemon.high_rate);
