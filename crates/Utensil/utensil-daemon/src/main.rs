@@ -163,12 +163,12 @@ fn cmd_stop() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // timeout: force-remove stale file if process is now dead
+    // daemon didn't exit cleanly within 3s — likely hung
     if Process::new(pid).kill(0).is_err() {
         let _ = std::fs::remove_file(pid_file);
-        println!("daemon stopped (PID file force-removed)");
+        println!("daemon stopped");
     } else {
-        println!("warning: daemon did not stop within 3s");
+        println!("warning: daemon did not stop within 3s (still running)");
     }
     Ok(())
 }
