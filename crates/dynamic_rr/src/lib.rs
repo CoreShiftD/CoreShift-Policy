@@ -14,6 +14,8 @@ use coreshift_core::android_property::{
     android_property_find, android_property_get, android_property_serial,
     android_property_set, android_property_wait,
 };
+use coreshift_core::binder::RawBinderService;
+use coreshift_core::dex::find_transaction_code;
 use coreshift_core::reactor::{Fd, Reactor};
 use coreshift_core::spawn::{SpawnOptions, SpawnBackend};
 use coreshift_core::{log_info, log_warn};
@@ -59,11 +61,43 @@ struct InputDev {
     fd:   Fd,
 }
 
+// ── display binder ────────────────────────────────────────────────────────────
+
+const DISPLAY_JAR:   &str = "/system/framework/framework.jar";
+const DISPLAY_STUB:  &str = "Landroid/hardware/display/IDisplayManager$Stub;";
+const DISPLAY_FIELD: &str = "TRANSACTION_setRefreshRateSwitchingType";
+
+const SWITCHING_TYPE_NONE:                   i32 = 0;
+const SWITCHING_TYPE_ACROSS_AND_WITHIN_GROUPS: i32 = 2;
+
+struct DisplayCtx {
+    svc:  RawBinderService,
+    code: u32,
+}
+
+impl DisplayCtx {
+    fn open() -> Option<Self> {
+        let code = find_transaction_code(DISPLAY_JAR, DISPLAY_STUB, DISPLAY_FIELD)
+            .or_else(|| { log_warn!(TAG, "dex: {DISPLAY_FIELD} not found — using hardcoded 51"); Some(51) })?;
+        match RawBinderService::open("display") {
+            Ok(svc) => { log_info!(TAG, "display binder ready tx={code}"); Some(Self { svc, code }) }
+            Err(e)  => { log_warn!(TAG, "display binder: {e}"); None }
+        }
+    }
+
+    fn set_switching_type(&self, t: i32) {
+        if let Err(e) = self.svc.transact_i32(self.code, t) {
+            log_warn!(TAG, "setRefreshRateSwitchingType({t}): {e}");
+        }
+    }
+}
+
 struct Daemon {
     config:    Config,
     low_rate:  String,
     high_rate: String,
     mode:      Mode,
+    display:   Option<DisplayCtx>,
 }
 
 // ── prop helpers ──────────────────────────────────────────────────────────────
@@ -210,6 +244,7 @@ impl Daemon {
             low_rate:  String::new(),
             high_rate: String::new(),
             mode:      Mode::Unknown,
+            display:   DisplayCtx::open(),
         }
     }
 
@@ -253,6 +288,14 @@ impl Daemon {
         if ok {
             log_info!(TAG, "mode={mode:?} min={min_r} peak={peak_r}");
             self.mode = mode;
+            if let Some(d) = &self.display {
+                let switching = match mode {
+                    Mode::High => SWITCHING_TYPE_ACROSS_AND_WITHIN_GROUPS,
+                    Mode::Low  => SWITCHING_TYPE_NONE,
+                    Mode::Unknown => unreachable!(),
+                };
+                d.set_switching_type(switching);
+            }
         } else {
             log_warn!(TAG, "set_rate failed");
         }
