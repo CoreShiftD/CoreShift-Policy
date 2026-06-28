@@ -27,9 +27,9 @@ use std::time::{Duration, Instant};
 const FG_SOCKET:    &[u8] = b"coreshift";
 const WD_CONSUMER:  &[u8] = b"coreshift_wd_consumer";
 
-const TAG:      &str = "policy:wd";
+const TAG:       &str = "policy:wd";
 const TICK_PROP: &str = "debug.tracing.watchdog_tick";
-const INTERVAL: Duration = Duration::from_secs(15 * 60);
+use utensil_wd::INTERVAL;
 
 /// Pre-spawned once in main. Watches IDLE_STATE_PROP forever, updates is_deep
 /// and writes idle_efd so the WD reactor wakes immediately on state change.
@@ -130,8 +130,8 @@ fn fg_connect(reactor: &mut Reactor) -> Option<(coreshift_core::unix_socket::Uni
 
 /// WD thread entry. Receives pre-spawned watcher's shared state.
 pub fn run(data_dir: &str, pkg_xml: &str, is_deep: Arc<AtomicBool>, idle_efd: Arc<Fd>) {
-    let wl_conf = format!("{data_dir}/watchdog_whitelist.conf");
-    let ta_conf = format!("{data_dir}/terminal_apps.conf");
+    let wl_conf = utensil_wd::WL_CONF;
+    let ta_conf = utensil_wd::TA_CONF;
 
     let mut cache = UidCache::new(data_dir);
     cache.load_or_refresh(pkg_xml);

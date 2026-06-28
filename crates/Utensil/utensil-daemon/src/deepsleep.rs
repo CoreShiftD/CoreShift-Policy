@@ -2,13 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/
 
-use coreshift_core::android_property::{
-    android_property_find, android_property_read, android_property_serial,
-    android_property_set, android_property_wait,
-};
+use coreshift_core::android_property::android_property_set;
 use coreshift_core::reactor::{Event, Fd, Reactor, Token};
 use coreshift_core::{log_error, log_info, log_warn};
 use utensil_ds::binder_calls::{BinderCtx, IDLE_DEEP, IDLE_LIGHT};
+use utensil_ds::idle_fsm::make_cancel;
+use utensil_ds::prop_wait::ScreenProp;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -88,16 +87,12 @@ fn run_fsm(ctx: Arc<BinderCtx>, cancel: Arc<Fd>) {
 
 /// DS thread entry. Watches screen state, spawns/cancels FSM, writes IDLE_STATE_PROP.
 pub fn run(ctx: Arc<BinderCtx>) {
-    let info = match android_property_find("debug.tracing.screen_state") {
-        Some(i) => i,
+    let mut screen = match ScreenProp::open() {
+        Some(s) => s,
         None => {
             log_error!(TAG, "screen_state property not found");
             std::process::exit(1);
         }
-    };
-    let mut serial = match android_property_serial(info) {
-        Ok(s) => s,
-        Err(e) => { log_error!(TAG, "serial: {e}"); std::process::exit(1); }
     };
 
     let _ = android_property_set(IDLE_STATE_PROP, "none");
@@ -106,16 +101,9 @@ pub fn run(ctx: Arc<BinderCtx>) {
     let mut fsm_handle: Option<thread::JoinHandle<()>> = None;
 
     loop {
-        let next_serial = match android_property_wait(info, serial, None) {
-            Ok(Some(s)) => s,
-            Ok(None) => { log_warn!(TAG, "wait returned None; retry"); continue; }
-            Err(e)    => { log_warn!(TAG, "wait: {e}; retry"); continue; }
-        };
-        serial = next_serial;
-
-        let value = match android_property_read(info) {
-            Ok(v) => v.value,
-            Err(e) => { log_warn!(TAG, "read: {e}"); continue; }
+        let value = match screen.wait_change() {
+            Some(v) => v,
+            None    => { log_warn!(TAG, "screen_state wait failed; retry"); continue; }
         };
         let screen_on = value.trim() == "2";
         log_info!(TAG, "screen_state={value:?} on={screen_on}");
@@ -127,7 +115,7 @@ pub fn run(ctx: Arc<BinderCtx>) {
         if screen_on {
             let _ = android_property_set(IDLE_STATE_PROP, "none");
         } else {
-            let cancel_fd    = Arc::new(Fd::eventfd(0).expect("ds cancel eventfd"));
+            let cancel_fd    = make_cancel();
             cancel           = Some(cancel_fd.clone());
             let ctx_ref      = ctx.clone();
             fsm_handle = Some(thread::spawn(move || run_fsm(ctx_ref, cancel_fd)));

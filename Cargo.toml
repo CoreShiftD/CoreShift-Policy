@@ -11,6 +11,6 @@ coreshift-core       = "1.2.13"
 coreshift-foreground = "0.1.10"
 utensil-ds           = "0.1.2"
 utensil-wd           = "0.1.2"
-utensil-bs           = "0.1.1"
+utensil-bs           = "0.1.2"
 utensil-pm           = { path = "crates/pm" }
 dynamic-rr           = { path = "crates/dynamic_rr" }

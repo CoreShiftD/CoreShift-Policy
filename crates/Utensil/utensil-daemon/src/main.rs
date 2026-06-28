@@ -29,7 +29,7 @@ const TAG:      &str = "corepolicy";
 const DATA_DIR: &str = "/data/local/tmp/Utensil";
 const PID_FILE: &str = "/data/local/tmp/Utensil/corepolicy.pid";
 const LOG_FILE: &str = "/data/local/tmp/Utensil/corepolicy.log";
-const PKG_XML:  &str = "/data/system/packages.xml";
+use utensil_wd::PKG_XML;
 const FG_CONF:  &str = "/data/local/tmp/coreshift/coreshift.conf";
 
 // ── supervisor ────────────────────────────────────────────────────────────────
@@ -192,7 +192,7 @@ fn cmd_status() -> Result<(), Box<dyn std::error::Error>> {
     let props = [
         ("screen_state",    "debug.tracing.screen_state"),
         ("idle_state",      "debug.tracing.idle_state"),
-        ("charge_state",    "debug.tracing.charge_state"),
+        ("charge_state",    utensil_bs::CHARGE_PROP),
         ("watchdog_tick",   "debug.tracing.watchdog_tick"),
     ];
     for (label, prop) in props {

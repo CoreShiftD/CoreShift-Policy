@@ -35,9 +35,9 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "utensil-bs"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6780b384283b943a75f5aa2f4f2b4609ef6fa8f0bb4212552e30e72c7dc0e21a"
+checksum = "2a9abc6758b9c6a121c1190a247051fbd0ce4f25495f64eaca28f61b6780390d"
 dependencies = [
  "coreshift-core",
 ]
