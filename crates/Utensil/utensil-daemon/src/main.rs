@@ -24,10 +24,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const TAG:      &str = "utensil-daemon";
+const TAG:      &str = "corepolicy";
 const DATA_DIR: &str = "/data/local/tmp/Utensil";
-const PID_FILE: &str = "/data/local/tmp/Utensil/daemon.pid";
-const LOG_FILE: &str = "/data/local/tmp/Utensil/daemon.log";
+const PID_FILE: &str = "/data/local/tmp/Utensil/corepolicy.pid";
+const LOG_FILE: &str = "/data/local/tmp/Utensil/corepolicy.log";
 const PKG_XML:  &str = "/data/system/packages.xml";
 const FG_CONF:  &str = "/data/local/tmp/coreshift/coreshift.conf";
 
@@ -201,7 +201,7 @@ fn cmd_status() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn print_usage() {
-    println!("Usage: utensil-daemon <command>");
+    println!("Usage: corepolicy <command>");
     println!("Commands:");
     println!("  daemon   Start the policy daemon (supervised, detached)");
     println!("  stop     Stop the running daemon");
