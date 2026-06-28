@@ -31,74 +31,77 @@ pub fn run() {
     let abis = preload::device_abis();
     log_info!(TAG, "device abis: {}", abis.join(","));
 
-    let pkg_map = load_packages(&abis);
-    log_info!(TAG, "loaded {} pkg(s)", pkg_map.len());
+    'reconnect: loop {
+        let pkg_map = load_packages(&abis);
+        log_info!(TAG, "loaded {} pkg(s)", pkg_map.len());
 
-    let stream = loop {
-        match connect_unix_stream_named(
-            UnixSocketAddr::Abstract(FG_SOCKET),
-            UnixSocketAddr::Abstract(CONSUMER_SOCKET),
-        ) {
-            Ok(UnixConnectResult::Connected(s)) => break s,
-            Ok(UnixConnectResult::InProgress(s)) => {
-                std::thread::sleep(Duration::from_millis(200));
-                match s.finish_connect() {
-                    Ok(s)  => break s,
-                    Err(e) => { log_warn!(TAG, "connect in-progress: {e}"); }
-                }
-            }
-            Err(e) => { log_warn!(TAG, "connect @coreshift: {e} — retry in 2s"); }
-        }
-        std::thread::sleep(Duration::from_secs(2));
-    };
-
-    if stream.fd.write_slice(WATCH_CMD).is_err() {
-        log_error!(TAG, "write watch cmd failed");
-        return;
-    }
-
-    let mut reactor = match Reactor::new() {
-        Ok(r)  => r,
-        Err(e) => { log_error!(TAG, "reactor: {e}"); return; }
-    };
-    let fg_tok = match reactor.add(&stream.fd, true, false) {
-        Ok(t)  => t,
-        Err(e) => { log_error!(TAG, "add fg: {e}"); return; }
-    };
-
-    let mut events:   Vec<Event> = Vec::new();
-    let mut buf:      [u8; 256]  = [0u8; 256];
-    let mut leftover: String     = String::new();
-
-    log_info!(TAG, "watching @coreshift for foreground changes");
-
-    loop {
-        events.clear();
-        match reactor.wait(&mut events, 1, -1) {
-            Err(_) | Ok(0) => continue,
-            Ok(_) => {}
-        }
-
-        for ev in &events {
-            if ev.token != fg_tok { continue; }
-            if ev.hangup || ev.error {
-                log_warn!(TAG, "@coreshift disconnected");
-                return;
-            }
-            loop {
-                match stream.fd.read_slice(&mut buf) {
-                    Ok(Some(0)) | Ok(None) => break,
-                    Err(_) => { log_warn!(TAG, "read fg socket"); break; }
-                    Ok(Some(n)) => {
-                        leftover.push_str(&String::from_utf8_lossy(&buf[..n]));
+        let stream = loop {
+            match connect_unix_stream_named(
+                UnixSocketAddr::Abstract(FG_SOCKET),
+                UnixSocketAddr::Abstract(CONSUMER_SOCKET),
+            ) {
+                Ok(UnixConnectResult::Connected(s)) => break s,
+                Ok(UnixConnectResult::InProgress(s)) => {
+                    std::thread::sleep(Duration::from_millis(200));
+                    match s.finish_connect() {
+                        Ok(s)  => break s,
+                        Err(e) => { log_warn!(TAG, "connect in-progress: {e}"); }
                     }
                 }
+                Err(e) => { log_warn!(TAG, "connect @coreshift: {e} — retry in 2s"); }
             }
-            while let Some(nl) = leftover.find('\n') {
-                let pkg = leftover[..nl].trim().to_string();
-                leftover.drain(..=nl);
-                if pkg.is_empty() { continue; }
-                on_foreground(&pkg, &pkg_map);
+            std::thread::sleep(Duration::from_secs(2));
+        };
+
+        if stream.fd.write_slice(WATCH_CMD).is_err() {
+            log_warn!(TAG, "write watch cmd failed — retry in 2s");
+            std::thread::sleep(Duration::from_secs(2));
+            continue 'reconnect;
+        }
+
+        let mut reactor = match Reactor::new() {
+            Ok(r)  => r,
+            Err(e) => { log_error!(TAG, "reactor: {e}"); return; }
+        };
+        let fg_tok = match reactor.add(&stream.fd, true, false) {
+            Ok(t)  => t,
+            Err(e) => { log_error!(TAG, "add fg: {e}"); return; }
+        };
+
+        let mut events:   Vec<Event> = Vec::new();
+        let mut buf:      [u8; 256]  = [0u8; 256];
+        let mut leftover: String     = String::new();
+
+        log_info!(TAG, "watching @coreshift for foreground changes");
+
+        loop {
+            events.clear();
+            match reactor.wait(&mut events, 1, -1) {
+                Err(_) | Ok(0) => continue,
+                Ok(_) => {}
+            }
+
+            for ev in &events {
+                if ev.token != fg_tok { continue; }
+                if ev.hangup || ev.error {
+                    log_warn!(TAG, "@coreshift disconnected — reconnecting");
+                    continue 'reconnect;
+                }
+                loop {
+                    match stream.fd.read_slice(&mut buf) {
+                        Ok(Some(0)) | Ok(None) => break,
+                        Err(_) => { log_warn!(TAG, "read fg socket"); break; }
+                        Ok(Some(n)) => {
+                            leftover.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        }
+                    }
+                }
+                while let Some(nl) = leftover.find('\n') {
+                    let pkg = leftover[..nl].trim().to_string();
+                    leftover.drain(..=nl);
+                    if pkg.is_empty() { continue; }
+                    on_foreground(&pkg, &pkg_map);
+                }
             }
         }
     }

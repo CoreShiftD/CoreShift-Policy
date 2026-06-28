@@ -18,7 +18,7 @@ use coreshift_core::reactor::{Fd, Reactor};
 use coreshift_core::spawn::{SpawnOptions, SpawnBackend};
 use coreshift_core::{log_info, log_warn};
 
-const TAG: &str = "dynamic_rr";
+const TAG: &str = "policy:rr";
 
 const PROP_DYNAMIC: &str = "persist.inoi.refresh.dynamic";
 const PROP_LOW:     &str = "persist.inoi.refresh.low";
@@ -312,7 +312,7 @@ pub fn run() {
         })
         .collect();
 
-    log_info!(TAG, "start idle={}ms inputs={}", daemon.config.idle_ms,
+    log_info!("policy:rr:init", "start idle={}ms inputs={}", daemon.config.idle_ms,
         inputs.iter().map(|d| d.path.as_str()).collect::<Vec<_>>().join(" "));
 
     if dynamic_enabled() {
