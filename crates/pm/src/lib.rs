@@ -8,11 +8,11 @@ use coreshift_core::reactor::{Event, Reactor};
 use coreshift_core::unix_socket::{
     connect_unix_stream_named, UnixConnectResult, UnixSocketAddr,
 };
+use coreshift_core::spawn::{SpawnOptions, SpawnBackend};
 use coreshift_core::{log_error, log_info, log_warn};
 use preload::ResolvedTarget;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 const TAG:             &str  = "policy:pm";
@@ -31,9 +31,10 @@ pub fn run() {
     let abis = preload::device_abis();
     log_info!(TAG, "device abis: {}", abis.join(","));
 
+    let mut pkg_map: HashMap<String, PkgInfo> = HashMap::new();
+    refresh_packages(&abis, &mut pkg_map);
+
     'reconnect: loop {
-        let pkg_map = load_packages(&abis);
-        log_info!(TAG, "loaded {} pkg(s)", pkg_map.len());
 
         let stream = loop {
             match connect_unix_stream_named(
@@ -85,6 +86,7 @@ pub fn run() {
                 if ev.token != fg_tok { continue; }
                 if ev.hangup || ev.error {
                     log_warn!(TAG, "@coreshift disconnected — reconnecting");
+                    refresh_packages(&abis, &mut pkg_map);
                     continue 'reconnect;
                 }
                 loop {
@@ -121,25 +123,39 @@ fn on_foreground(pkg: &str, pkg_map: &HashMap<String, PkgInfo>) {
 
 // ── package list ──────────────────────────────────────────────────────────────
 
-fn load_packages(abis: &[String]) -> HashMap<String, PkgInfo> {
-    let output = match Command::new("/system/bin/cmd")
-        .args(["package", "list", "packages", "-f"])
-        .output()
+fn refresh_packages(abis: &[String], map: &mut HashMap<String, PkgInfo>) {
+    let argv = vec![
+        "/system/bin/cmd".to_string(),
+        "package".to_string(), "list".to_string(),
+        "packages".to_string(), "-f".to_string(),
+    ];
+    let out = match SpawnOptions::builder(argv, SpawnBackend::PosixSpawn)
+        .capture_stdout()
+        .timeout_ms(10_000)
+        .build()
+        .and_then(|o| o.run())
     {
         Ok(o)  => o,
-        Err(e) => { log_warn!(TAG, "cmd package: {e}"); return HashMap::new(); }
+        Err(e) => { log_warn!(TAG, "cmd package: {e}"); return; }
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut map = HashMap::new();
+    let stdout = match std::str::from_utf8(&out.stdout) {
+        Ok(s)  => s,
+        Err(_) => { log_warn!(TAG, "cmd package: non-utf8 output"); return; }
+    };
 
+    let mut seen = 0usize;
+    let mut added = 0usize;
     for line in stdout.lines() {
-        if let Some(entry) = parse_package_line(line.trim(), abis) {
-            map.insert(entry.0, entry.1);
+        seen += 1;
+        if let Some((pkg, info)) = parse_package_line(line.trim(), abis) {
+            if !map.contains_key(&pkg) {
+                map.insert(pkg, info);
+                added += 1;
+            }
         }
     }
-
-    map
+    log_info!(TAG, "pkg refresh: {seen} seen, {added} new, {} total", map.len());
 }
 
 /// Parse `package:/path/to/base.apk=com.pkg` → `(pkg, PkgInfo)`.

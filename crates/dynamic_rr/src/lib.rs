@@ -263,9 +263,13 @@ impl Daemon {
         }
     }
 
+    fn reload_rates_if_needed(&mut self) {
+        if self.low_rate.is_empty() { self.load_rates(); }
+    }
+
     fn apply_mode(&mut self, mode: Mode) -> bool {
         if mode == Mode::Unknown { return false; }
-        if !self.load_rates() { return false; }
+        if self.low_rate.is_empty() && !self.load_rates() { return false; }
         // Low  → cap both at low_rate  (lock to e.g. 60 Hz)
         // High → floor at low_rate, ceiling at high_rate (allow e.g. 120 Hz)
         let (min_r, peak_r) = match mode {
@@ -302,23 +306,28 @@ impl Daemon {
 // ── prop watcher ──────────────────────────────────────────────────────────────
 
 fn spawn_prop_watcher(notify: Arc<Fd>) {
-    for name in [PROP_DYNAMIC, PROP_LOW, PROP_HIGH] {
-        let notify = notify.clone();
-        thread::spawn(move || {
-            let info = loop {
+    thread::spawn(move || {
+        let infos: Vec<_> = [PROP_DYNAMIC, PROP_LOW, PROP_HIGH].iter().map(|&name| {
+            loop {
                 if let Some(i) = android_property_find(name) { break i; }
                 thread::sleep(Duration::from_secs(1));
-            };
-            let mut serial = android_property_serial(info).unwrap_or(0);
-            loop {
-                match android_property_wait(info, serial, None) {
-                    Ok(Some(s)) => { serial = s; let _ = notify.write_u64(1); }
+            }
+        }).collect();
+
+        let mut serials: Vec<u32> = infos.iter()
+            .map(|&i| android_property_serial(i).unwrap_or(0))
+            .collect();
+
+        loop {
+            for (idx, &info) in infos.iter().enumerate() {
+                match android_property_wait(info, serials[idx], Some(Duration::from_millis(100))) {
+                    Ok(Some(s)) => { serials[idx] = s; let _ = notify.write_u64(1); }
                     Ok(None)    => {}
                     Err(_)      => thread::sleep(Duration::from_millis(200)),
                 }
             }
-        });
-    }
+        }
+    });
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -416,6 +425,7 @@ pub fn run() {
         }
 
         if prop_change {
+            daemon.load_rates();
             if dynamic_enabled() {
                 if daemon.mode == Mode::Unknown {
                     daemon.set_low();

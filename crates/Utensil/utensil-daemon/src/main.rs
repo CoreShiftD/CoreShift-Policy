@@ -148,7 +148,7 @@ fn cmd_stop() -> Result<(), Box<dyn std::error::Error>> {
     let _ = process.kill(SIGTERM);
 
     let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(3) {
+    while start.elapsed() < Duration::from_secs(10) {
         std::thread::sleep(Duration::from_millis(100));
         // file gone → supervisor cleaned up and exited
         if !pid_file.exists() {
@@ -168,7 +168,7 @@ fn cmd_stop() -> Result<(), Box<dyn std::error::Error>> {
         let _ = std::fs::remove_file(pid_file);
         println!("daemon stopped");
     } else {
-        println!("warning: daemon did not stop within 3s (still running)");
+        println!("warning: daemon did not stop within 10s (still running)");
     }
     Ok(())
 }
@@ -257,14 +257,14 @@ fn run_daemon() {
 
     watchdog::spawn_prop_watcher(is_deep.clone(), idle_efd.clone());
 
-    let fg_ready_file = format!("{}daemon.ready", Config::load(FG_CONF).cache_dir);
+    let fg_config = Config::load(FG_CONF);
+    let fg_ready_file = format!("{}daemon.ready", fg_config.cache_dir);
     let _ = std::fs::remove_file(&fg_ready_file);
 
-    thread::spawn(|| {
+    thread::spawn(move || {
         loop {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let config = Config::load(FG_CONF);
-                let mut daemon = Daemon::new(config);
+                let mut daemon = Daemon::new(fg_config.clone());
                 daemon.run()
             }));
             match &result {
