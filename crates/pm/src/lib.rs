@@ -40,7 +40,13 @@ pub fn run() {
             UnixSocketAddr::Abstract(CONSUMER_SOCKET),
         ) {
             Ok(UnixConnectResult::Connected(s)) => break s,
-            Ok(UnixConnectResult::InProgress(_)) => {}
+            Ok(UnixConnectResult::InProgress(s)) => {
+                std::thread::sleep(Duration::from_millis(200));
+                match s.finish_connect() {
+                    Ok(s)  => break s,
+                    Err(e) => { log_warn!(TAG, "connect in-progress: {e}"); }
+                }
+            }
             Err(e) => { log_warn!(TAG, "connect @coreshift: {e} — retry in 2s"); }
         }
         std::thread::sleep(Duration::from_secs(2));
