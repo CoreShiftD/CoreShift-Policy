@@ -13,9 +13,16 @@ dependencies = [
 
 [[package]]
 name = "coreshift-foreground"
-version = "0.1.7"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3cf82748f21e35c8c70eefce7ae705d8c9eca49b6ecc88a2c438cc7fb398f06"
+checksum = "3923c474c0f03b751f0dea5109f7065e6bcbcbebb96d0ea07b95b294b5a3e197"
+dependencies = [
+ "coreshift-core",
+]
+
+[[package]]
+name = "dynamic-rr"
+version = "0.1.0"
 dependencies = [
  "coreshift-core",
 ]
@@ -41,6 +48,7 @@ version = "0.1.0"
 dependencies = [
  "coreshift-core",
  "coreshift-foreground",
+ "dynamic-rr",
  "utensil-bs",
  "utensil-ds",
  "utensil-pm",
@@ -66,9 +74,9 @@ dependencies = [
 
 [[package]]
 name = "utensil-wd"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cedc2290ac2dedbb50cab632d82fea9b63db347473fcbc4117ff3cf4e852ae30"
+checksum = "fddcd91776feb73239d59922cc54946a4f2d6a835c9317dc13921dcc9a5dd116"
 dependencies = [
  "coreshift-core",
  "coreshift-foreground",
