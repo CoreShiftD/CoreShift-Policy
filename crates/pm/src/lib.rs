@@ -26,6 +26,9 @@ struct PkgInfo {
 pub fn run() {
     log_info!(TAG, "start pid={}", std::process::id());
 
+    let abis = preload::device_abis();
+    log_info!(TAG, "device abis: {}", abis.join(","));
+
     let pkg_map = load_packages();
     log_info!(TAG, "loaded {} pkg(s)", pkg_map.len());
 
@@ -88,13 +91,13 @@ pub fn run() {
                 let pkg = leftover[..nl].trim().to_string();
                 leftover.drain(..=nl);
                 if pkg.is_empty() { continue; }
-                on_foreground(&pkg, &pkg_map);
+                on_foreground(&pkg, &pkg_map, &abis);
             }
         }
     }
 }
 
-fn on_foreground(pkg: &str, pkg_map: &HashMap<String, PkgInfo>) {
+fn on_foreground(pkg: &str, pkg_map: &HashMap<String, PkgInfo>, abis: &[String]) {
     let info = match pkg_map.get(pkg) {
         Some(i) => i,
         None    => {
@@ -103,7 +106,7 @@ fn on_foreground(pkg: &str, pkg_map: &HashMap<String, PkgInfo>) {
         }
     };
     log_info!(TAG, "fg={pkg} — hint");
-    preload::hint_package(&info.install_dir);
+    preload::hint_package(&info.install_dir, abis);
 }
 
 // ── package list ──────────────────────────────────────────────────────────────
