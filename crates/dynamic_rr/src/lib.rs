@@ -306,28 +306,23 @@ impl Daemon {
 // ── prop watcher ──────────────────────────────────────────────────────────────
 
 fn spawn_prop_watcher(notify: Arc<Fd>) {
-    thread::spawn(move || {
-        let infos: Vec<_> = [PROP_DYNAMIC, PROP_LOW, PROP_HIGH].iter().map(|&name| {
-            loop {
+    for name in [PROP_DYNAMIC, PROP_LOW, PROP_HIGH] {
+        let notify = notify.clone();
+        thread::spawn(move || {
+            let info = loop {
                 if let Some(i) = android_property_find(name) { break i; }
                 thread::sleep(Duration::from_secs(1));
-            }
-        }).collect();
-
-        let mut serials: Vec<u32> = infos.iter()
-            .map(|&i| android_property_serial(i).unwrap_or(0))
-            .collect();
-
-        loop {
-            for (idx, &info) in infos.iter().enumerate() {
-                match android_property_wait(info, serials[idx], Some(Duration::from_millis(100))) {
-                    Ok(Some(s)) => { serials[idx] = s; let _ = notify.write_u64(1); }
+            };
+            let mut serial = android_property_serial(info).unwrap_or(0);
+            loop {
+                match android_property_wait(info, serial, None) {
+                    Ok(Some(s)) => { serial = s; let _ = notify.write_u64(1); }
                     Ok(None)    => {}
                     Err(_)      => thread::sleep(Duration::from_millis(200)),
                 }
             }
-        }
-    });
+        });
+    }
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
