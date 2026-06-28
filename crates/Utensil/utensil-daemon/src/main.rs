@@ -112,6 +112,7 @@ fn run_supervisor() -> Result<(), Box<dyn std::error::Error>> {
                     signal_ignore(SIGPIPE);
                 }
                 close_fds_from(3);
+                let _ = std::fs::create_dir_all(DATA_DIR);
 
                 if let Ok(f) = std::fs::OpenOptions::new()
                     .create(true).append(true).open(LOG_FILE)
@@ -145,30 +146,31 @@ fn cmd_stop() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let _ = process.kill(SIGTERM);
-
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(10) {
-        std::thread::sleep(Duration::from_millis(100));
-        // file gone → supervisor cleaned up and exited
-        if !pid_file.exists() {
-            println!("daemon stopped");
-            return Ok(());
+    for attempt in 1..=3u32 {
+        let _ = process.kill(SIGTERM);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(100));
+            if !pid_file.exists() {
+                println!("daemon stopped");
+                return Ok(());
+            }
+            if Process::new(pid).kill(0).is_err() {
+                let _ = std::fs::remove_file(pid_file);
+                println!("daemon stopped");
+                return Ok(());
+            }
         }
-        // process dead but file not yet removed (supervisor killed) → clean up
-        if Process::new(pid).kill(0).is_err() {
-            let _ = std::fs::remove_file(pid_file);
-            println!("daemon stopped");
-            return Ok(());
+        if attempt < 3 {
+            log_warn!(TAG, "stop attempt {attempt}/3 — retrying");
         }
     }
 
-    // daemon didn't exit cleanly within 3s — likely hung
     if Process::new(pid).kill(0).is_err() {
         let _ = std::fs::remove_file(pid_file);
         println!("daemon stopped");
     } else {
-        println!("warning: daemon did not stop within 10s (still running)");
+        println!("warning: daemon did not stop after 3 attempts");
     }
     Ok(())
 }

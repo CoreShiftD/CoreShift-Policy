@@ -328,6 +328,11 @@ fn spawn_prop_watcher(notify: Arc<Fd>) {
 // ── public API ────────────────────────────────────────────────────────────────
 
 pub fn run() {
+    if android_property_find(PROP_DYNAMIC).is_none() {
+        log_info!(TAG, "persist.inoi.refresh props absent — dynamic rr disabled");
+        return;
+    }
+
     let config = load_config();
     let mut daemon = Daemon::new(config);
     let mut inputs = open_inputs(&daemon.config.input_devices);

@@ -21,8 +21,8 @@ const CONSUMER_SOCKET: &[u8] = b"coreshift_pm_consumer";
 const WATCH_CMD:       &[u8] = b"watch";
 
 struct PkgInfo {
-    install_dir: PathBuf,
-    targets:     Vec<ResolvedTarget>,
+    apk_path: PathBuf,
+    targets:  Option<Vec<ResolvedTarget>>,
 }
 
 pub fn run() {
@@ -32,7 +32,7 @@ pub fn run() {
     log_info!(TAG, "device abis: {}", abis.join(","));
 
     let mut pkg_map: HashMap<String, PkgInfo> = HashMap::new();
-    refresh_packages(&abis, &mut pkg_map);
+    refresh_packages(&mut pkg_map);
 
     'reconnect: loop {
 
@@ -86,7 +86,7 @@ pub fn run() {
                 if ev.token != fg_tok { continue; }
                 if ev.hangup || ev.error {
                     log_warn!(TAG, "@coreshift disconnected — reconnecting");
-                    refresh_packages(&abis, &mut pkg_map);
+                    refresh_packages(&mut pkg_map);
                     continue 'reconnect;
                 }
                 loop {
@@ -102,28 +102,33 @@ pub fn run() {
                     let pkg = leftover[..nl].trim().to_string();
                     leftover.drain(..=nl);
                     if pkg.is_empty() { continue; }
-                    on_foreground(&pkg, &pkg_map);
+                    on_foreground(&pkg, &mut pkg_map, &abis);
                 }
             }
         }
     }
 }
 
-fn on_foreground(pkg: &str, pkg_map: &HashMap<String, PkgInfo>) {
-    let info = match pkg_map.get(pkg) {
+fn on_foreground(pkg: &str, pkg_map: &mut HashMap<String, PkgInfo>, abis: &[String]) {
+    let info = match pkg_map.get_mut(pkg) {
         Some(i) => i,
         None    => {
             log_info!(TAG, "fg={pkg} not in pkg map, skip");
             return;
         }
     };
+    if info.targets.is_none() {
+        info.targets = Some(preload::resolve_targets(&info.apk_path, abis));
+    }
+    let targets = info.targets.as_ref().unwrap();
+    let install_dir = info.apk_path.parent().unwrap_or(&info.apk_path);
     log_info!(TAG, "fg={pkg} — hint");
-    preload::hint_resolved(&info.install_dir, &info.targets);
+    preload::hint_resolved(install_dir, targets);
 }
 
 // ── package list ──────────────────────────────────────────────────────────────
 
-fn refresh_packages(abis: &[String], map: &mut HashMap<String, PkgInfo>) {
+fn refresh_packages(map: &mut HashMap<String, PkgInfo>) {
     let argv = vec![
         "/system/bin/cmd".to_string(),
         "package".to_string(), "list".to_string(),
@@ -148,7 +153,7 @@ fn refresh_packages(abis: &[String], map: &mut HashMap<String, PkgInfo>) {
     let mut added = 0usize;
     for line in stdout.lines() {
         seen += 1;
-        if let Some((pkg, info)) = parse_package_line(line.trim(), abis) {
+        if let Some((pkg, info)) = parse_package_line(line.trim()) {
             if !map.contains_key(&pkg) {
                 map.insert(pkg, info);
                 added += 1;
@@ -159,13 +164,10 @@ fn refresh_packages(abis: &[String], map: &mut HashMap<String, PkgInfo>) {
 }
 
 /// Parse `package:/path/to/base.apk=com.pkg` → `(pkg, PkgInfo)`.
-fn parse_package_line(line: &str, abis: &[String]) -> Option<(String, PkgInfo)> {
-    let pkg_part    = line.split_whitespace().next()?.strip_prefix("package:")?;
-    let eq          = pkg_part.rfind('=')?;
-    let apk_path    = PathBuf::from(&pkg_part[..eq]);
-    let pkg         = pkg_part[eq + 1..].to_string();
-    let install_dir = apk_path.parent()?.to_path_buf();
-    let targets     = preload::resolve_targets(&apk_path, abis);
-
-    Some((pkg, PkgInfo { install_dir, targets }))
+fn parse_package_line(line: &str) -> Option<(String, PkgInfo)> {
+    let pkg_part = line.split_whitespace().next()?.strip_prefix("package:")?;
+    let eq       = pkg_part.rfind('=')?;
+    let apk_path = PathBuf::from(&pkg_part[..eq]);
+    let pkg      = pkg_part[eq + 1..].to_string();
+    Some((pkg, PkgInfo { apk_path, targets: None }))
 }
