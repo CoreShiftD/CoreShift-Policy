@@ -9,6 +9,7 @@ use coreshift_core::unix_socket::{
     connect_unix_stream_named, UnixConnectResult, UnixSocketAddr,
 };
 use coreshift_core::{log_error, log_info, log_warn};
+use preload::ResolvedTarget;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
@@ -21,6 +22,7 @@ const WATCH_CMD:       &[u8] = b"watch";
 
 struct PkgInfo {
     install_dir: PathBuf,
+    targets:     Vec<ResolvedTarget>,
 }
 
 pub fn run() {
@@ -29,7 +31,7 @@ pub fn run() {
     let abis = preload::device_abis();
     log_info!(TAG, "device abis: {}", abis.join(","));
 
-    let pkg_map = load_packages();
+    let pkg_map = load_packages(&abis);
     log_info!(TAG, "loaded {} pkg(s)", pkg_map.len());
 
     let stream = loop {
@@ -58,7 +60,6 @@ pub fn run() {
         Err(e) => { log_error!(TAG, "add fg: {e}"); return; }
     };
 
-    // pkg → set of top-app PIDs at last hint
     let mut events:   Vec<Event> = Vec::new();
     let mut buf:      [u8; 256]  = [0u8; 256];
     let mut leftover: String     = String::new();
@@ -91,13 +92,13 @@ pub fn run() {
                 let pkg = leftover[..nl].trim().to_string();
                 leftover.drain(..=nl);
                 if pkg.is_empty() { continue; }
-                on_foreground(&pkg, &pkg_map, &abis);
+                on_foreground(&pkg, &pkg_map);
             }
         }
     }
 }
 
-fn on_foreground(pkg: &str, pkg_map: &HashMap<String, PkgInfo>, abis: &[String]) {
+fn on_foreground(pkg: &str, pkg_map: &HashMap<String, PkgInfo>) {
     let info = match pkg_map.get(pkg) {
         Some(i) => i,
         None    => {
@@ -106,14 +107,12 @@ fn on_foreground(pkg: &str, pkg_map: &HashMap<String, PkgInfo>, abis: &[String])
         }
     };
     log_info!(TAG, "fg={pkg} — hint");
-    preload::hint_package(&info.install_dir, abis);
+    preload::hint_resolved(&info.install_dir, &info.targets);
 }
 
 // ── package list ──────────────────────────────────────────────────────────────
 
-/// Run `cmd package list packages -f` and parse into pkg → PkgInfo.
-/// Output line format: `package:<apk_path>=<pkg>`
-fn load_packages() -> HashMap<String, PkgInfo> {
+fn load_packages(abis: &[String]) -> HashMap<String, PkgInfo> {
     let output = match Command::new("/system/bin/cmd")
         .args(["package", "list", "packages", "-f"])
         .output()
@@ -126,7 +125,7 @@ fn load_packages() -> HashMap<String, PkgInfo> {
     let mut map = HashMap::new();
 
     for line in stdout.lines() {
-        if let Some(entry) = parse_package_line(line.trim()) {
+        if let Some(entry) = parse_package_line(line.trim(), abis) {
             map.insert(entry.0, entry.1);
         }
     }
@@ -135,13 +134,13 @@ fn load_packages() -> HashMap<String, PkgInfo> {
 }
 
 /// Parse `package:/path/to/base.apk=com.pkg` → `(pkg, PkgInfo)`.
-fn parse_package_line(line: &str) -> Option<(String, PkgInfo)> {
-    // strip "package:" prefix, remainder is "<path>=<pkg>"
+fn parse_package_line(line: &str, abis: &[String]) -> Option<(String, PkgInfo)> {
     let pkg_part    = line.split_whitespace().next()?.strip_prefix("package:")?;
     let eq          = pkg_part.rfind('=')?;
     let apk_path    = PathBuf::from(&pkg_part[..eq]);
     let pkg         = pkg_part[eq + 1..].to_string();
     let install_dir = apk_path.parent()?.to_path_buf();
+    let targets     = preload::resolve_targets(&apk_path, abis);
 
-    Some((pkg, PkgInfo { install_dir }))
+    Some((pkg, PkgInfo { install_dir, targets }))
 }

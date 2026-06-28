@@ -11,100 +11,76 @@ use std::path::{Path, PathBuf};
 
 const TAG: &str = "policy:pm:preload";
 
-/// Ordered list of ISAs to probe, derived once from ro.product.cpu.abilist.
-/// Falls back to arm64 only if the property is missing.
+/// Ordered device ISA list from ro.product.cpu.abilist. Resolved once at startup.
 pub fn device_abis() -> Vec<String> {
     let raw = android_property_get("ro.product.cpu.abilist")
         .unwrap_or_else(|| android_property_get("ro.product.cpu.abi").unwrap_or_default());
     if raw.is_empty() {
         return vec!["arm64".into()];
     }
-    // ABI names map to ISA dir names: arm64-v8a → arm64, armeabi-v7a → arm, etc.
     raw.split(',')
         .filter_map(|abi| match abi.trim() {
             "arm64-v8a"   => Some("arm64"),
-            "armeabi-v7a" => Some("arm"),
-            "armeabi"     => Some("arm"),
+            "armeabi-v7a" | "armeabi" => Some("arm"),
             "x86_64"      => Some("x86_64"),
             "x86"         => Some("x86"),
             _             => None,
         })
         .map(str::to_string)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .fold(Vec::new(), |mut acc, s| { if !acc.contains(&s) { acc.push(s); } acc })
+        .fold(Vec::new(), |mut acc, s| {
+            if !acc.contains(&s) { acc.push(s); }
+            acc
+        })
 }
 
 #[derive(Clone, Copy)]
 enum Method { Fadvise, Readahead }
 
-struct Target { path: PathBuf, method: Method }
-
-/// Issue fadvise/readahead hints on all relevant files in the install dir.
-/// `install_dir` is the parent of base.apk, resolved directly from `cmd package`.
-/// `abis` is the ordered device ISA list from `device_abis()`.
-pub fn hint_package(install_dir: &Path, abis: &[String]) {
-    let targets = discover(install_dir, abis);
-    if targets.is_empty() {
-        log_warn!(TAG, "no targets in {}", install_dir.display());
-        return;
-    }
-    let mut bytes = 0u64;
-    let mut files = 0usize;
-    for t in &targets {
-        match apply(&t.path, t.method) {
-            Ok(n)  => { bytes += n as u64; files += 1; }
-            Err(e) => { log_warn!(TAG, "{}: {e}", t.path.display()); }
-        }
-    }
-    log_info!(TAG, "{}: hinted {files} file(s) {bytes}B", install_dir.display());
+pub struct ResolvedTarget {
+    path:   PathBuf,
+    method: Method,
 }
 
-// ── discovery ─────────────────────────────────────────────────────────────────
+/// Resolve all hintable files for a package at load time (once, with full perms).
+/// `apk_path` is the full path to base.apk from `cmd package list packages -f`.
+/// Returns empty vec if nothing found (e.g. package not yet installed on disk).
+pub fn resolve_targets(apk_path: &Path, abis: &[String]) -> Vec<ResolvedTarget> {
+    let install_dir = match apk_path.parent() {
+        Some(d) => d,
+        None    => return Vec::new(),
+    };
 
-fn real_file(p: &Path) -> bool {
-    fs::symlink_metadata(p)
-        .map(|m| m.is_file() && !m.file_type().is_symlink())
-        .unwrap_or(false)
-}
-
-fn discover(dir: &Path, abis: &[String]) -> Vec<Target> {
     let mut out = Vec::new();
 
-    // APKs + .dm dexmetadata at install root → fadvise (sequential reads)
-    if let Ok(entries) = fs::read_dir(dir) {
+    // APKs + .dm dexmetadata at install root → fadvise
+    if let Ok(entries) = fs::read_dir(install_dir) {
         for e in entries.flatten() {
             let p = e.path();
             if !real_file(&p) { continue; }
             let name = p.file_name().unwrap_or_default().to_string_lossy();
             if name.ends_with(".apk") || name.ends_with(".dm") {
-                out.push(Target { path: p, method: Method::Fadvise });
+                out.push(ResolvedTarget { path: p, method: Method::Fadvise });
             }
         }
     }
 
-    // Native libs: lib/<isa>/*.so — only device-supported ISAs
+    // Native libs: lib/<isa>/*.so → readahead
     for isa in abis {
-        if let Ok(entries) = fs::read_dir(dir.join(format!("lib/{isa}"))) {
+        if let Ok(entries) = fs::read_dir(install_dir.join(format!("lib/{isa}"))) {
             for e in entries.flatten() {
                 let p = e.path();
                 if real_file(&p) && p.extension().map(|x| x == "so").unwrap_or(false) {
-                    out.push(Target { path: p, method: Method::Readahead });
+                    out.push(ResolvedTarget { path: p, method: Method::Readahead });
                 }
             }
         }
     }
 
-    // OAT artifacts: oat/<isa>/*.{odex,vdex,art} — only device-supported ISAs
-    // User apps: oat/ lives inside the install dir.
-    // System apps (/system, /system_ext, /vendor, /product): oat lives in
-    //   /data/dalvik-cache/<isa>/<encoded-path>@classes.{vdex,odex,art}
-    //   where the encoded path is the apk path with '/' replaced by '@'.
-    let in_data = dir.starts_with("/data/app");
-    for isa in abis {
-        if in_data {
-            // user app — oat inside install dir
-            if let Ok(entries) = fs::read_dir(dir.join(format!("oat/{isa}"))) {
+    // OAT artifacts
+    if install_dir.starts_with("/data/app") {
+        // user app: oat/ lives inside install dir
+        for isa in abis {
+            if let Ok(entries) = fs::read_dir(install_dir.join(format!("oat/{isa}"))) {
                 for e in entries.flatten() {
                     let p = e.path();
                     if !real_file(&p) { continue; }
@@ -116,38 +92,27 @@ fn discover(dir: &Path, abis: &[String]) -> Vec<Target> {
                     } else {
                         continue;
                     };
-                    out.push(Target { path: p, method });
+                    out.push(ResolvedTarget { path: p, method });
                 }
             }
-        } else {
-            // system/vendor/product app — oat in dalvik-cache
-            // encode each apk's path and probe all matching artifacts
-            let cache_dir = PathBuf::from(format!("/data/dalvik-cache/{isa}"));
-            if let Ok(entries) = fs::read_dir(&cache_dir) {
-                // collect apk names in this install dir to match against
-                let apk_names: Vec<String> = out.iter()
-                    .filter(|t| t.path.extension().map(|e| e == "apk").unwrap_or(false))
-                    .filter_map(|t| {
-                        // encode: strip leading '/', replace '/' with '@'
-                        t.path.to_str().map(|s| s.trim_start_matches('/').replace('/', "@"))
-                    })
-                    .collect();
-
-                for e in entries.flatten() {
-                    let p = e.path();
-                    if !real_file(&p) { continue; }
-                    let fname = p.file_name().unwrap_or_default().to_string_lossy();
-                    // match prefix against any of our apk encoded names
-                    let matched = apk_names.iter().any(|enc| fname.starts_with(enc.as_str()));
-                    if !matched { continue; }
-                    let method = if fname.ends_with(".art") {
-                        Method::Fadvise
-                    } else if fname.ends_with(".odex") || fname.ends_with(".vdex") {
-                        Method::Readahead
-                    } else {
-                        continue;
-                    };
-                    out.push(Target { path: p, method });
+        }
+    } else {
+        // system/vendor/product app: OAT in /data/dalvik-cache/<isa>/
+        // Path encoding: strip leading '/', replace '/' with '@'.
+        // Files: <encoded-apk>@classes.{vdex,odex,art}
+        if let Some(apk_str) = apk_path.to_str() {
+            let encoded = apk_str.trim_start_matches('/').replace('/', "@");
+            for isa in abis {
+                let base = PathBuf::from(format!("/data/dalvik-cache/{isa}/{encoded}"));
+                for (suffix, method) in &[
+                    ("@classes.vdex", Method::Readahead),
+                    ("@classes.odex", Method::Readahead),
+                    ("@classes.art",  Method::Fadvise),
+                ] {
+                    let p = PathBuf::from(format!("{}{suffix}", base.display()));
+                    if real_file(&p) {
+                        out.push(ResolvedTarget { path: p, method: *method });
+                    }
                 }
             }
         }
@@ -156,7 +121,30 @@ fn discover(dir: &Path, abis: &[String]) -> Vec<Target> {
     out
 }
 
-// ── apply ─────────────────────────────────────────────────────────────────────
+/// Apply pre-resolved hints. Called on every foreground change.
+pub fn hint_resolved(install_dir: &Path, targets: &[ResolvedTarget]) {
+    if targets.is_empty() {
+        log_warn!(TAG, "no targets for {}", install_dir.display());
+        return;
+    }
+    let mut bytes = 0u64;
+    let mut files = 0usize;
+    for t in targets {
+        match apply(&t.path, t.method) {
+            Ok(n)  => { bytes += n as u64; files += 1; }
+            Err(e) => { log_warn!(TAG, "{}: {e}", t.path.display()); }
+        }
+    }
+    log_info!(TAG, "{}: hinted {files} file(s) {bytes}B", install_dir.display());
+}
+
+// ── internals ─────────────────────────────────────────────────────────────────
+
+fn real_file(p: &Path) -> bool {
+    fs::symlink_metadata(p)
+        .map(|m| m.is_file() && !m.file_type().is_symlink())
+        .unwrap_or(false)
+}
 
 fn apply(path: &Path, method: Method) -> Result<usize, String> {
     let file = fs::File::open(path).map_err(|e| e.to_string())?;
