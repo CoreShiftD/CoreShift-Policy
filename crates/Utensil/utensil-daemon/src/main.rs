@@ -257,10 +257,18 @@ fn run_daemon() {
     watchdog::spawn_prop_watcher(is_deep.clone(), idle_efd.clone());
 
     thread::spawn(|| {
-        let config = Config::load(FG_CONF);
-        let mut daemon = Daemon::new(config);
-        if let Err(e) = daemon.run() {
-            log_error!("policy:fg", "exited: {e}");
+        loop {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let config = Config::load(FG_CONF);
+                let mut daemon = Daemon::new(config);
+                daemon.run()
+            }));
+            match &result {
+                Err(_)        => log_error!("policy:fg", "panic — restarting in 2s"),
+                Ok(Err(e))    => log_error!("policy:fg", "error: {e} — restarting in 2s"),
+                Ok(Ok(()))    => log_info!("policy:fg",  "exit — restarting in 2s"),
+            }
+            thread::sleep(Duration::from_secs(2));
         }
     });
 
