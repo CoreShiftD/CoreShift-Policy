@@ -62,7 +62,6 @@ name = "utensil-pm"
 version = "0.1.0"
 dependencies = [
  "coreshift-core",
- "coreshift-foreground",
 ]
 
 [[package]]

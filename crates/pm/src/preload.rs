@@ -9,7 +9,6 @@ use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 
 const TAG:  &str      = "policy:pm:preload";
-const ROOT: &str      = "/data/app";
 const ABIS: [&str; 4] = ["arm64", "arm", "x86_64", "x86"];
 
 #[derive(Clone, Copy)]
@@ -17,66 +16,26 @@ enum Method { Fadvise, Readahead }
 
 struct Target { path: PathBuf, method: Method }
 
-// ── public API ────────────────────────────────────────────────────────────────
-
-pub fn hint_package(pkg: &str) {
-    let install_dir = match find_install_dir(pkg) {
-        Some(d) => d,
-        None    => { log_warn!(TAG, "{pkg}: install dir not found"); return; }
-    };
-    let targets = discover(&install_dir);
+/// Issue fadvise/readahead hints on all relevant files in the install dir.
+/// `install_dir` is the parent of base.apk, resolved directly from `cmd package`.
+pub fn hint_package(install_dir: &Path) {
+    let targets = discover(install_dir);
     if targets.is_empty() {
-        log_warn!(TAG, "{pkg}: no targets in {}", install_dir.display());
+        log_warn!(TAG, "no targets in {}", install_dir.display());
         return;
     }
     let mut bytes = 0u64;
     let mut files = 0usize;
     for t in &targets {
-        match apply_fadvise(&t.path, t.method) {
+        match apply(&t.path, t.method) {
             Ok(n)  => { bytes += n as u64; files += 1; }
-            Err(e) => { log_warn!(TAG, "{pkg}: {}: {e}", t.path.display()); }
+            Err(e) => { log_warn!(TAG, "{}: {e}", t.path.display()); }
         }
     }
-    log_info!(TAG, "{pkg}: hinted {files} file(s) {bytes}B");
+    log_info!(TAG, "{}: hinted {files} file(s) {bytes}B", install_dir.display());
 }
 
 // ── discovery ─────────────────────────────────────────────────────────────────
-
-fn find_install_dir(pkg: &str) -> Option<PathBuf> {
-    // Old layout: /data/app/<pkg>-<N>/base.apk
-    // New layout: /data/app/<hash>/<pkg>-<N>/base.apk
-    for entry in fs::read_dir(ROOT).ok()?.flatten() {
-        let name = entry.file_name();
-        let s = name.to_string_lossy();
-        if pkg_dir_match(&s, pkg) {
-            let p = entry.path();
-            if real_dir(&p) && p.join("base.apk").is_file() { return Some(p); }
-        }
-        if real_dir(&entry.path()) {
-            if let Ok(subs) = fs::read_dir(entry.path()) {
-                for sub in subs.flatten() {
-                    let sn = sub.file_name();
-                    let ss = sn.to_string_lossy();
-                    if pkg_dir_match(&ss, pkg) {
-                        let p = sub.path();
-                        if real_dir(&p) && p.join("base.apk").is_file() { return Some(p); }
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-fn pkg_dir_match(dir: &str, pkg: &str) -> bool {
-    dir.starts_with(pkg) && dir[pkg.len()..].starts_with('-')
-}
-
-fn real_dir(p: &Path) -> bool {
-    fs::symlink_metadata(p)
-        .map(|m| m.is_dir() && !m.file_type().is_symlink())
-        .unwrap_or(false)
-}
 
 fn real_file(p: &Path) -> bool {
     fs::symlink_metadata(p)
@@ -111,7 +70,7 @@ fn discover(dir: &Path) -> Vec<Target> {
         }
     }
 
-    // OAT artifacts: oat/<isa>/*.{odex,vdex,art} — inside install dir, not dalvik-cache
+    // OAT artifacts: oat/<isa>/*.{odex,vdex,art} — inside install dir
     for isa in ABIS {
         if let Ok(entries) = fs::read_dir(dir.join(format!("oat/{isa}"))) {
             for e in entries.flatten() {
@@ -135,13 +94,9 @@ fn discover(dir: &Path) -> Vec<Target> {
 
 // ── apply ─────────────────────────────────────────────────────────────────────
 
-fn file_len(path: &Path) -> usize {
-    fs::metadata(path).map(|m| m.len() as usize).unwrap_or(0)
-}
-
-fn apply_fadvise(path: &Path, method: Method) -> Result<usize, String> {
+fn apply(path: &Path, method: Method) -> Result<usize, String> {
     let file = fs::File::open(path).map_err(|e| e.to_string())?;
-    let len  = file_len(path);
+    let len  = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
     if len == 0 { return Ok(0); }
     match method {
         Method::Fadvise   => fadvise(file.as_raw_fd(), 0, len, FADV_WILLNEED)
@@ -151,4 +106,3 @@ fn apply_fadvise(path: &Path, method: Method) -> Result<usize, String> {
     }
     Ok(len)
 }
-
