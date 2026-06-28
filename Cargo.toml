@@ -9,6 +9,6 @@ resolver = "2"
 coreshift-core       = "1.2.13"
 coreshift-foreground = "0.1.9"
 utensil-ds           = "0.1.2"
-utensil-wd           = "0.1.1"
+utensil-wd           = "0.1.2"
 utensil-bs           = "0.1.1"
 utensil-pm           = { path = "crates/pm" }

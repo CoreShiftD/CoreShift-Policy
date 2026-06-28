@@ -80,7 +80,9 @@ fn do_tick(
     log_info!(TAG, "foreground={:?}", fg_pkg);
 
     if let Some(ref fg) = fg_pkg {
-        punish.reverse(fg);
+        if punish.level(fg) > 0 {
+            punish.reverse(fg);
+        }
     }
 
     let mut live_bg: HashSet<String> = HashSet::new();
@@ -206,8 +208,10 @@ pub fn run(data_dir: &str, pkg_xml: &str, is_deep: Arc<AtomicBool>, idle_efd: Ar
                         let pkg = leftover[..nl].trim().to_string();
                         leftover.drain(..=nl);
                         if pkg.is_empty() { continue; }
-                        log_info!(TAG, "fg={pkg} — instant reverse");
-                        punish.reverse(&pkg);
+                        if punish.level(&pkg) > 0 {
+                            log_info!(TAG, "fg={pkg} — instant reverse");
+                            punish.reverse(&pkg);
+                        }
                     }
                 }
             }
