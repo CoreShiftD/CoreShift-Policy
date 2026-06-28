@@ -107,7 +107,13 @@ fn fg_connect(reactor: &mut Reactor) -> Option<(coreshift_core::unix_socket::Uni
         UnixSocketAddr::Abstract(WD_CONSUMER),
     ) {
         Ok(UnixConnectResult::Connected(s)) => s,
-        Ok(UnixConnectResult::InProgress(_)) => return None,
+        Ok(UnixConnectResult::InProgress(s)) => {
+            std::thread::sleep(Duration::from_millis(200));
+            match s.finish_connect() {
+                Ok(s)  => s,
+                Err(e) => { log_warn!(TAG, "connect in-progress: {e}"); return None; }
+            }
+        }
         Err(e) => { log_warn!(TAG, "connect @coreshift: {e}"); return None; }
     };
     if stream.fd.write_slice(b"watch").is_err() {
