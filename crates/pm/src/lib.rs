@@ -112,7 +112,7 @@ fn on_foreground(pkg: &str, pkg_map: &HashMap<String, PkgInfo>) {
 /// Run `cmd package list packages -f -U -3` and parse into pkg → PkgInfo.
 /// Output line format: `package:<apk_path>=<pkg> uid:<uid>`
 fn load_third_party_packages() -> HashMap<String, PkgInfo> {
-    let output = match Command::new("cmd")
+    let output = match Command::new("/system/bin/cmd")
         .args(["package", "list", "packages", "-f", "-U", "-3"])
         .output()
     {
