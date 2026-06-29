@@ -26,17 +26,40 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const TAG:      &str = "corepolicy";
-const DATA_DIR: &str = "/data/local/tmp/Utensil";
-const PID_FILE: &str = "/data/local/tmp/Utensil/corepolicy.pid";
-const LOG_FILE: &str = "/data/local/tmp/Utensil/corepolicy.log";
+const TAG: &str = "corepolicy";
+
+fn data_dir() -> &'static str {
+    // uid 2000 = shell — avoid colliding with root-owned /data/local/tmp/Utensil
+    if coreshift_core::process::getuid() == 2000 {
+        "/data/local/tmp/Utensil_shell"
+    } else {
+        "/data/local/tmp/Utensil"
+    }
+}
+
+use std::sync::OnceLock;
+static DATA_DIR_BUF: OnceLock<String> = OnceLock::new();
+static PID_FILE_BUF: OnceLock<String> = OnceLock::new();
+static LOG_FILE_BUF: OnceLock<String> = OnceLock::new();
+
+fn init_paths() {
+    let d = data_dir();
+    DATA_DIR_BUF.get_or_init(|| d.to_owned());
+    PID_FILE_BUF.get_or_init(|| format!("{d}/corepolicy.pid"));
+    LOG_FILE_BUF.get_or_init(|| format!("{d}/corepolicy.log"));
+}
+
+fn data_dir_s()  -> &'static str { DATA_DIR_BUF.get().map(|s| s.as_str()).unwrap_or("/data/local/tmp/Utensil") }
+fn pid_file_s()  -> &'static str { PID_FILE_BUF.get().map(|s| s.as_str()).unwrap_or("/data/local/tmp/Utensil/corepolicy.pid") }
+fn log_file_s()  -> &'static str { LOG_FILE_BUF.get().map(|s| s.as_str()).unwrap_or("/data/local/tmp/Utensil/corepolicy.log") }
+
 use utensil_wd::PKG_XML;
-const FG_CONF:  &str = "/data/local/tmp/coreshift/coreshift.conf";
+const FG_CONF: &str = "/data/local/tmp/coreshift/coreshift.conf";
 
 // ── supervisor ────────────────────────────────────────────────────────────────
 
 fn run_supervisor() -> Result<(), Box<dyn std::error::Error>> {
-    let pid_file = Path::new(PID_FILE);
+    let pid_file = Path::new(pid_file_s());
     if pid_file.exists() {
         if let Ok(s) = std::fs::read_to_string(pid_file) {
             if let Ok(pid) = s.trim().parse::<i32>() {
@@ -50,7 +73,7 @@ fn run_supervisor() -> Result<(), Box<dyn std::error::Error>> {
         let _ = std::fs::remove_file(pid_file);
     }
 
-    let _ = std::fs::create_dir_all(DATA_DIR);
+    let _ = std::fs::create_dir_all(data_dir_s());
 
     // first fork — parent waits for middle child, then polls PID file
     match unsafe { fork()? } {
@@ -113,10 +136,10 @@ fn run_supervisor() -> Result<(), Box<dyn std::error::Error>> {
                     signal_ignore(SIGPIPE);
                 }
                 close_fds_from(3);
-                let _ = std::fs::create_dir_all(DATA_DIR);
+                let _ = std::fs::create_dir_all(data_dir_s());
 
                 if let Ok(f) = std::fs::OpenOptions::new()
-                    .create(true).append(true).open(LOG_FILE)
+                    .create(true).append(true).open(log_file_s())
                 {
                     use std::os::unix::io::IntoRawFd;
                     unsafe { redirect_fd_to(f.into_raw_fd(), 2) };
@@ -132,7 +155,7 @@ fn run_supervisor() -> Result<(), Box<dyn std::error::Error>> {
 // ── subcommands ───────────────────────────────────────────────────────────────
 
 fn cmd_stop() -> Result<(), Box<dyn std::error::Error>> {
-    let pid_file = Path::new(PID_FILE);
+    let pid_file = Path::new(pid_file_s());
     let s = match std::fs::read_to_string(pid_file) {
         Err(_) => { println!("daemon not running (no PID file)"); return Ok(()); }
         Ok(s) => s,
@@ -188,7 +211,7 @@ fn read_screen_socket() -> Option<String> {
 }
 
 fn cmd_status() -> Result<(), Box<dyn std::error::Error>> {
-    let pid_file = Path::new(PID_FILE);
+    let pid_file = Path::new(pid_file_s());
     if pid_file.exists() {
         if let Ok(s) = std::fs::read_to_string(pid_file) {
             let pid = s.trim();
@@ -228,6 +251,7 @@ fn print_usage() {
 }
 
 fn main() {
+    init_paths();
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 { print_usage(); return; }
 
@@ -237,7 +261,7 @@ fn main() {
         "restart" => {
             cmd_stop().ok();
             // wait for stale PID file to vanish
-            let pid_file = Path::new(PID_FILE);
+            let pid_file = Path::new(pid_file_s());
             let start = Instant::now();
             while pid_file.exists() && start.elapsed() < Duration::from_secs(3) {
                 std::thread::sleep(Duration::from_millis(100));
@@ -259,7 +283,7 @@ fn main() {
 fn run_daemon() {
     log_info!(TAG, "start pid={}", std::process::id());
 
-    let _ = std::fs::create_dir_all(DATA_DIR);
+    let _ = std::fs::create_dir_all(data_dir_s());
 
     // Block SIGTERM/SIGINT before spawning any threads so all threads
     // inherit the blocked mask and the signal is only delivered via signalfd.
@@ -315,7 +339,8 @@ fn run_daemon() {
         }
     }
 
-    thread::spawn(move || watchdog::run(DATA_DIR, PKG_XML, is_deep, idle_efd));
+    let wd_dir = data_dir_s();
+thread::spawn(move || watchdog::run(wd_dir, PKG_XML, is_deep, idle_efd));
 
     thread::spawn(|| utensil_pm::run());
     thread::spawn(|| dynamic_rr::run());
