@@ -57,9 +57,9 @@ dependencies = [
 
 [[package]]
 name = "utensil-ds"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "415933533584bac639a5a5df82d8400548332012bee5965244fdaf3fd266cc6a"
+checksum = "ad95e68a82c05896d32f855f96bc63e62547bd18738be9c8b824c2b7c90043c7"
 dependencies = [
  "coreshift-core",
  "coreshift-foreground",

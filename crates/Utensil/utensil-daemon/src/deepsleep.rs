@@ -76,6 +76,13 @@ pub fn run(ctx: Arc<BinderCtx>) {
 
     let _ = android_property_set(IDLE_STATE_PROP, "none");
 
+    // Seed SCREEN_STATE so `corepolicy status` shows correct value immediately
+    // without waiting for a prop change event.
+    if let Some(on) = screen.current() {
+        SCREEN_STATE.store(if on { 1 } else { 0 }, Ordering::Relaxed);
+        log_info!(TAG, "initial screen_on={on}");
+    }
+
     let mut cancel: Option<Arc<Fd>>              = None;
     let mut fsm_handle: Option<thread::JoinHandle<()>> = None;
 
