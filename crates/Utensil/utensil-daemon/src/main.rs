@@ -6,6 +6,7 @@ mod deepsleep;
 mod watchdog;
 
 use coreshift_core::android_property::android_property_get;
+use coreshift_core::unix_socket::{connect_unix_stream, UnixConnectResult, UnixSocketAddr};
 use coreshift_core::process::{
     close_fds_from, fork, redirect_fd_to, redirect_stdio_to_devnull, set_pdeathsig, setsid,
     setpgid, ForkResult,
@@ -174,6 +175,18 @@ fn cmd_stop() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn read_screen_socket() -> Option<String> {
+    let addr = UnixSocketAddr::Abstract(deepsleep::SCREEN_SOCKET);
+    let stream = match connect_unix_stream(addr).ok()? {
+        UnixConnectResult::Connected(s) => s,
+        UnixConnectResult::InProgress(s) => s.finish_connect().ok()?,
+    };
+    let mut buf = [0u8; 16];
+    let n = stream.fd.read_slice(&mut buf).ok()??;
+    let s = std::str::from_utf8(&buf[..n]).ok()?;
+    Some(s.trim().to_owned())
+}
+
 fn cmd_status() -> Result<(), Box<dyn std::error::Error>> {
     let pid_file = Path::new(PID_FILE);
     if pid_file.exists() {
@@ -188,8 +201,11 @@ fn cmd_status() -> Result<(), Box<dyn std::error::Error>> {
         println!("daemon: not running");
     }
 
+    // screen_state: read from daemon socket (live), not property
+    let screen = read_screen_socket().unwrap_or_else(|| "-".into());
+    println!("screen_state={screen}");
+
     let props = [
-        ("screen_state",    "debug.tracing.screen_state"),
         ("idle_state",      "debug.tracing.idle_state"),
         ("charge_state",    utensil_bs::CHARGE_PROP),
         ("watchdog_tick",   "debug.tracing.watchdog_tick"),
