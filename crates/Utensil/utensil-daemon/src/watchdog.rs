@@ -16,20 +16,17 @@ use coreshift_foreground::blocklist::Blocklist;
 use coreshift_foreground::cache::UidCache;
 use coreshift_foreground::resolver::Resolver;
 use coreshift_foreground::terminal_apps::TerminalApps;
+use coreshift_foreground::{FG_SOCKET, WD_CONSUMER};
 use utensil_wd::proc_scan::scan_user_pids;
 use utensil_wd::punish::PunishMap;
+use utensil_wd::{drain_timer, INTERVAL, TICK_PROP};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-const FG_SOCKET:    &[u8] = b"coreshift";
-const WD_CONSUMER:  &[u8] = b"coreshift_wd_consumer";
-
-const TAG:       &str = "policy:wd";
-const TICK_PROP: &str = "debug.tracing.watchdog_tick";
-use utensil_wd::INTERVAL;
+const TAG: &str = "policy:wd";
 
 /// Pre-spawned once in main. Watches IDLE_STATE_PROP forever, updates is_deep
 /// and writes idle_efd so the WD reactor wakes immediately on state change.
@@ -243,8 +240,7 @@ pub fn run(data_dir: &str, pkg_xml: &str, is_deep: Arc<AtomicBool>, idle_efd: Ar
 
             // ── timer fired ───────────────────────────────────────────────
             if tok == timer_tok {
-                let mut tbuf = [0u8; 8];
-                while let Ok(Some(_)) = timer.read_slice(&mut tbuf) {}
+                drain_timer(&timer);
 
                 do_tick(&mut resolver, &mut punish, &launcher, &mut prev_live, &mut tick);
 

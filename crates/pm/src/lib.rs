@@ -10,15 +10,14 @@ use coreshift_core::unix_socket::{
 };
 use coreshift_core::spawn::{SpawnOptions, SpawnBackend};
 use coreshift_core::{log_error, log_info, log_warn};
+use coreshift_foreground::{FG_SOCKET, PM_CONSUMER};
 use preload::ResolvedTarget;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const TAG:             &str  = "policy:pm";
-const FG_SOCKET:       &[u8] = b"coreshift";
-const CONSUMER_SOCKET: &[u8] = b"coreshift_pm_consumer";
-const WATCH_CMD:       &[u8] = b"watch";
+const TAG:      &str  = "policy:pm";
+const WATCH_CMD: &[u8] = b"watch";
 
 struct PkgInfo {
     apk_path: PathBuf,
@@ -39,7 +38,7 @@ pub fn run() {
         let stream = loop {
             match connect_unix_stream_named(
                 UnixSocketAddr::Abstract(FG_SOCKET),
-                UnixSocketAddr::Abstract(CONSUMER_SOCKET),
+                UnixSocketAddr::Abstract(PM_CONSUMER),
             ) {
                 Ok(UnixConnectResult::Connected(s)) => break s,
                 Ok(UnixConnectResult::InProgress(s)) => {
