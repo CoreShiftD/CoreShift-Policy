@@ -4,23 +4,26 @@
 
 use coreshift_core::android_property::android_property_set;
 use coreshift_core::reactor::Fd;
-use coreshift_core::{log_error, log_info, log_warn};
+use coreshift_core::{log_info, log_warn};
 use utensil_ds::binder_calls::BinderCtx;
 use utensil_ds::idle_fsm::{make_cancel, run as run_idle_fsm};
 use utensil_ds::prop_wait::ScreenProp;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 const TAG: &str = "policy:ds";
 pub const IDLE_STATE_PROP: &str = "debug.tracing.idle_state";
 
 /// DS thread entry. Watches screen state, spawns/cancels FSM, writes IDLE_STATE_PROP.
 pub fn run(ctx: Arc<BinderCtx>) {
-    let mut screen = match ScreenProp::open() {
-        Some(s) => s,
-        None => {
-            log_error!(TAG, "screen_state property not found");
-            std::process::exit(1);
+    let mut screen = loop {
+        match ScreenProp::open() {
+            Some(s) => break s,
+            None => {
+                log_warn!(TAG, "screen_state property not found — retry in 5s");
+                thread::sleep(Duration::from_secs(5));
+            }
         }
     };
 
