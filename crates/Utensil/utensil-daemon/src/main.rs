@@ -39,7 +39,7 @@ fn run_supervisor() -> Result<(), Box<dyn std::error::Error>> {
     if pid_file.exists() {
         if let Ok(s) = std::fs::read_to_string(pid_file) {
             if let Ok(pid) = s.trim().parse::<i32>() {
-                if Process::new(pid).kill(0).is_ok() {
+                if Path::new(&format!("/proc/{pid}")).exists() {
                     println!("daemon already running (pid {pid})");
                     return Ok(());
                 }
@@ -139,8 +139,7 @@ fn cmd_stop() -> Result<(), Box<dyn std::error::Error>> {
     let pid: i32 = s.trim().parse()?;
     let process = Process::new(pid);
 
-    if process.kill(0).is_err() {
-        // stale PID file — process already dead
+    if !Path::new(&format!("/proc/{pid}")).exists() {
         let _ = std::fs::remove_file(pid_file);
         println!("daemon not running (stale PID file removed)");
         return Ok(());
@@ -155,7 +154,7 @@ fn cmd_stop() -> Result<(), Box<dyn std::error::Error>> {
                 println!("daemon stopped");
                 return Ok(());
             }
-            if Process::new(pid).kill(0).is_err() {
+            if !Path::new(&format!("/proc/{pid}")).exists() {
                 let _ = std::fs::remove_file(pid_file);
                 println!("daemon stopped");
                 return Ok(());
@@ -166,7 +165,7 @@ fn cmd_stop() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    if Process::new(pid).kill(0).is_err() {
+    if !Path::new(&format!("/proc/{pid}")).exists() {
         let _ = std::fs::remove_file(pid_file);
         println!("daemon stopped");
     } else {
@@ -181,7 +180,7 @@ fn cmd_status() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(s) = std::fs::read_to_string(pid_file) {
             let pid = s.trim();
             let alive = pid.parse::<i32>().ok()
-            .map(|p| Process::new(p).kill(0).is_ok())
+            .map(|p| Path::new(&format!("/proc/{p}")).exists())
             .unwrap_or(false);
             println!("daemon: {} (pid {pid})", if alive { "running" } else { "stale" });
         }
