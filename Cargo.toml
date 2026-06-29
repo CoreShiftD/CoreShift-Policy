@@ -9,7 +9,7 @@ resolver = "2"
 [workspace.dependencies]
 coreshift-core       = "1.2.13"
 coreshift-foreground = "0.1.10"
-utensil-ds           = "0.1.2"
+utensil-ds           = "0.1.3"
 utensil-wd           = "0.1.2"
 utensil-bs           = "0.1.2"
 utensil-pm           = { path = "crates/pm" }
